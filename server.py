@@ -142,7 +142,11 @@ async def websocket_endpoint(ws: WebSocket):
         log.info(f'Client disconnected  ({len(clients)} total)')
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-async def main(interval: int, port: int):
+async def main(interval: int, port: int, address: str | None):
+    if address:
+        print(f'Using hardcoded address: {address}')
+        state['address'] = address
+
     print(f'Starting web server on http://0.0.0.0:{port}')
 
     server_cfg = uvicorn.Config(app, host='0.0.0.0', port=port, log_level='warning')
@@ -157,6 +161,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Oakford Smoker Monitor')
     parser.add_argument('--interval', type=int,  default=30,   help='Poll interval in seconds (default: 30)')
     parser.add_argument('--port',     type=int,  default=8080, help='Web server port (default: 8080)')
+    parser.add_argument('--address',  type=str,  default=None, help='Hardcode BLE address, skipping discovery (e.g. AA:BB:CC:DD:EE:FF)')
     parser.add_argument('--debug',    action='store_true',     help='Enable verbose logging')
     args = parser.parse_args()
 
@@ -165,4 +170,4 @@ if __name__ == '__main__':
         format='%(asctime)s  %(levelname)-8s  %(message)s',
         datefmt='%H:%M:%S',
     )
-    asyncio.run(main(args.interval, args.port))
+    asyncio.run(main(args.interval, args.port, args.address))
