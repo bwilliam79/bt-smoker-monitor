@@ -208,7 +208,9 @@ function clearLog() {
 }
 
 // ── Chart ─────────────────────────────────────────────────────────────────────
-const chartLabels = [];
+const CHART_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+const chartLabels     = [];
+const chartTimestamps = [];
 const DS = {
   grill:       [],
   grillTarget: [],
@@ -257,6 +259,7 @@ const chart = new Chart(document.getElementById('tempChart'), {
 });
 
 function pushChartPoint(d) {
+  chartTimestamps.push(Date.now());
   chartLabels.push(ts());
   DS.grill.push(d.grill);
   DS.grillTarget.push(d.setPoint);
@@ -264,6 +267,15 @@ function pushChartPoint(d) {
   DS.p1Target.push(d.probes[0] < PROBE_DISCONNECTED && d.probeTargets[0] < PROBE_DISCONNECTED ? d.probeTargets[0] : null);
   DS.p2.push(d.probes[1] < PROBE_DISCONNECTED ? d.probes[1] : null);
   DS.p2Target.push(d.probes[1] < PROBE_DISCONNECTED && d.probeTargets[1] < PROBE_DISCONNECTED ? d.probeTargets[1] : null);
+
+  // Trim entries older than 24 hours
+  const cutoff = Date.now() - CHART_WINDOW_MS;
+  while (chartTimestamps.length && chartTimestamps[0] < cutoff) {
+    chartTimestamps.shift();
+    chartLabels.shift();
+    Object.values(DS).forEach(arr => arr.shift());
+  }
+
   chart.update();
 }
 
