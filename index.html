@@ -176,10 +176,10 @@ const PROBE_DISCONNECTED = 999;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const pad = n => String(n).padStart(2,'0');
-function ts() {
-  const d = new Date();
+function fmtTime(d) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+function ts() { return fmtTime(new Date()); }
 let logEntries = 0;
 function log(tag, msg, cls='tag-info') {
   const c = document.getElementById('log');
@@ -259,9 +259,9 @@ const chart = new Chart(document.getElementById('tempChart'), {
   },
 });
 
-function pushChartPoint(d) {
-  chartTimestamps.push(Date.now());
-  chartLabels.push(ts());
+function pushChartPoint(d, date = new Date(), skipUpdate = false) {
+  chartTimestamps.push(date.getTime());
+  chartLabels.push(fmtTime(date));
   DS.grill.push(d.grill);
   DS.grillTarget.push(d.setPoint);
   DS.p1.push(d.probes[0] < PROBE_DISCONNECTED ? d.probes[0] : null);
@@ -277,7 +277,7 @@ function pushChartPoint(d) {
     Object.values(DS).forEach(arr => arr.shift());
   }
 
-  chart.update();
+  if (!skipUpdate) chart.update();
 }
 
 // ── Dashboard update ──────────────────────────────────────────────────────────
@@ -525,6 +525,13 @@ function connect() {
 
   ws.onmessage = ({ data }) => {
     const d = JSON.parse(data);
+    if (d.type === 'history') {
+      d.data.forEach(pt => pushChartPoint(pt, new Date(pt.ts * 1000), true));
+      chart.update();
+      if (d.data.length) updateDash(d.data[d.data.length - 1]);
+      log('SYS', `Loaded ${d.data.length} historical data point(s).`, 'tag-sys');
+      return;
+    }
     if (d.smoker_offline) {
       setStatus('connecting', 'Smoker unreachable…');
       return;
