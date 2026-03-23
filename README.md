@@ -60,6 +60,7 @@ Then open **http://localhost:8080** in Chrome.
 |------|---------|-------------|
 | `--port` | `8080` | Web server port |
 | `--interval` | `30` | BLE poll interval in seconds |
+| `--address` | auto | Hardcode BLE address, skipping discovery (e.g. `AA:BB:CC:DD:EE:FF`) |
 | `--debug` | off | Enable verbose poll logging to stdout |
 
 Example — poll every 10 seconds with debug output:
