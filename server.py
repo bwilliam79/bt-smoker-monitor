@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import argparse
+import time
 from pathlib import Path
 
 from bleak import BleakScanner, BleakClient, BleakError
@@ -19,6 +20,7 @@ CHAR_TEMP = '0000cc01-0000-1000-8000-00805f9b34fb'
 
 PROBE_DISCONNECTED = 999
 TARGET_PREFIX      = 'NXE'
+HISTORY_MAX_AGE    = 24 * 60 * 60   # seconds
 
 log = logging.getLogger('smoker')
 
@@ -39,7 +41,7 @@ def decode_packet(data: bytes):
 # ── App state ─────────────────────────────────────────────────────────────────
 app      = FastAPI()
 clients: set[WebSocket] = set()
-state    = {'last': None, 'ip': None, 'address': None}
+state    = {'last': None, 'ip': None, 'address': None, 'history': []}
 
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 async def broadcast(msg: dict):
@@ -98,7 +100,11 @@ async def poll_loop(interval: int):
                     smoker_was_offline = False
                 dec['ip']      = state['ip']
                 dec['address'] = state['address']
-                state['last'] = dec
+                dec['ts']      = time.time()
+                state['last']  = dec
+                state['history'].append(dec)
+                cutoff = time.time() - HISTORY_MAX_AGE
+                state['history'] = [p for p in state['history'] if p['ts'] >= cutoff]
                 await broadcast(dec)
                 probes_str = ', '.join(
                     f'{p}°F → {dec["probeTargets"][i]}°F' if p < PROBE_DISCONNECTED else 'NC'
@@ -130,7 +136,9 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     clients.add(ws)
     log.info(f'Client connected  ({len(clients)} total)')
-    if state['last']:
+    if state['history']:
+        await ws.send_text(json.dumps({'type': 'history', 'data': state['history']}))
+    elif state['last']:
         await ws.send_text(json.dumps(state['last']))
     try:
         while True:
