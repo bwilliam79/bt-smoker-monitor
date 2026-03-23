@@ -64,11 +64,22 @@ async def find_smoker():
         return match.address
     return None
 
-async def poll_loop(address: str, interval: int):
+async def poll_loop(interval: int):
     smoker_was_offline = False
     while True:
+        # Discover smoker if we don't have an address yet
+        if not state['address']:
+            state['address'] = await find_smoker()
+            if not state['address']:
+                await broadcast({'smoker_offline': True})
+                if not smoker_was_offline:
+                    print('Smoker not found — will keep retrying.')
+                    smoker_was_offline = True
+                await asyncio.sleep(interval)
+                continue
+
         try:
-            async with BleakClient(address, timeout=15) as client:
+            async with BleakClient(state['address'], timeout=15) as client:
                 # Read IP once
                 if not state['ip']:
                     try:
@@ -99,6 +110,8 @@ async def poll_loop(address: str, interval: int):
             if not smoker_was_offline:
                 print('Smoker unreachable — will keep retrying.')
                 smoker_was_offline = True
+            # Clear address so next iteration re-scans
+            state['address'] = None
 
         await asyncio.sleep(interval)
 
@@ -129,19 +142,13 @@ async def websocket_endpoint(ws: WebSocket):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 async def main(interval: int, port: int):
-    address = await find_smoker()
-    if not address:
-        print('Smoker not found — make sure it is powered on and in range.')
-        return
-
-    state['address'] = address
     print(f'Starting web server on http://0.0.0.0:{port}')
 
     server_cfg = uvicorn.Config(app, host='0.0.0.0', port=port, log_level='warning')
     server     = uvicorn.Server(server_cfg)
 
     await asyncio.gather(
-        poll_loop(address, interval),
+        poll_loop(interval),
         server.serve(),
     )
 
