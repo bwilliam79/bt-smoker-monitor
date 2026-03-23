@@ -96,7 +96,8 @@ async def poll_loop(interval: int):
                 if smoker_was_offline:
                     print('Smoker reconnected.')
                     smoker_was_offline = False
-                dec['ip'] = state['ip']
+                dec['ip']      = state['ip']
+                dec['address'] = state['address']
                 state['last'] = dec
                 await broadcast(dec)
                 probes_str = ', '.join(
