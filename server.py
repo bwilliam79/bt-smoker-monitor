@@ -42,7 +42,7 @@ def decode_packet(data: bytes):
 # ── App state ─────────────────────────────────────────────────────────────────
 app      = FastAPI()
 clients: set[WebSocket] = set()
-state    = {'last': None, 'ip': None, 'address': None, 'history': [], 'interval': 30}
+state    = {'last': None, 'ip': None, 'address': None, 'history': [], 'log_history': [], 'interval': 30}
 
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 async def broadcast(msg: dict):
@@ -56,6 +56,12 @@ async def broadcast(msg: dict):
         except Exception:
             dead.add(ws)
     clients.difference_update(dead)
+
+# ── Server-side log history ───────────────────────────────────────────────────
+def add_log(tag: str, msg: str, cls: str, ts: float):
+    state['log_history'].append({'tag': tag, 'msg': msg, 'cls': cls, 'ts': ts})
+    cutoff = time.time() - HISTORY_MAX_AGE
+    state['log_history'] = [e for e in state['log_history'] if e['ts'] >= cutoff]
 
 # ── Clock-aligned sleep ───────────────────────────────────────────────────────
 async def sleep_to_next_tick(interval: int) -> None:
@@ -89,6 +95,7 @@ async def poll_loop(interval: int):
                 await broadcast({'smoker_offline': True})
                 if not smoker_was_offline:
                     print('Smoker not found — will keep retrying.')
+                    add_log('WARN', 'Smoker offline — retrying…', 'tag-warn', time.time())
                     smoker_was_offline = True
                 await asyncio.sleep(tick_time + interval - time.time())
                 continue
@@ -110,6 +117,7 @@ async def poll_loop(interval: int):
             if dec:
                 if smoker_was_offline:
                     print('Smoker reconnected.')
+                    add_log('SYS', 'Smoker reconnected.', 'tag-sys', tick_time)
                     smoker_was_offline = False
                 dec['ip']      = state['ip']
                 dec['address'] = state['address']
@@ -130,6 +138,7 @@ async def poll_loop(interval: int):
             await broadcast({'smoker_offline': True})
             if not smoker_was_offline:
                 print('Smoker unreachable — will keep retrying.')
+                add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', tick_time)
                 smoker_was_offline = True
             # Clear address so next iteration re-scans
             state['address'] = None
@@ -153,7 +162,7 @@ async def websocket_endpoint(ws: WebSocket):
     clients.add(ws)
     log.info(f'Client connected  ({len(clients)} total)')
     if state['history']:
-        await ws.send_text(json.dumps({'type': 'history', 'data': state['history']}))
+        await ws.send_text(json.dumps({'type': 'history', 'data': state['history'], 'logs': state['log_history']}))
     elif state['last']:
         await ws.send_text(json.dumps(state['last']))
     try:
