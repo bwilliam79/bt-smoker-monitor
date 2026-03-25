@@ -42,7 +42,7 @@ def decode_packet(data: bytes):
 # ── App state ─────────────────────────────────────────────────────────────────
 app      = FastAPI()
 clients: set[WebSocket] = set()
-state    = {'last': None, 'ip': None, 'address': None, 'history': [], 'log_history': [], 'interval': 30}
+state    = {'last': None, 'ip': None, 'address': None, 'rssi': None, 'history': [], 'log_history': [], 'interval': 30}
 
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 async def broadcast(msg: dict):
@@ -101,6 +101,14 @@ async def poll_loop(interval: int):
                 continue
 
         try:
+            # Quick scan for RSSI before connecting
+            try:
+                scanned = await BleakScanner.find_device_by_address(state['address'], timeout=3.0, scanning_mode='active')
+                if scanned:
+                    state['rssi'] = scanned.rssi
+            except Exception:
+                pass
+
             async with BleakClient(state['address'], timeout=15) as client:
                 # Read IP once
                 if not state['ip']:
@@ -119,9 +127,10 @@ async def poll_loop(interval: int):
                     print('Smoker reconnected.')
                     add_log('SYS', 'Smoker reconnected.', 'tag-sys', tick_time)
                     smoker_was_offline = False
-                dec['ip']      = state['ip']
-                dec['address'] = state['address']
-                dec['ts']      = tick_time
+                dec['ip']       = state['ip']
+                dec['address']  = state['address']
+                dec['rssi']     = state['rssi']
+                dec['ts']       = tick_time
                 dec['interval'] = state['interval']
                 state['last']  = dec
                 state['history'].append(dec)
