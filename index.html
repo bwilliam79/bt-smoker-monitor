@@ -4,14 +4,51 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Oakford Smoker Monitor</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #1a1a1a; color: #e0e0e0;
+      background:
+        radial-gradient(ellipse at 50% 110%, rgba(249,115,22,0.18) 0%, transparent 55%),
+        radial-gradient(ellipse at 15% 95%,  rgba(239,68,68,0.08)  0%, transparent 40%),
+        radial-gradient(ellipse at 85% 95%,  rgba(234,88,12,0.08)  0%, transparent 40%),
+        #111;
+      color: #e0e0e0;
       min-height: 100vh; padding: 24px;
+      overflow-x: hidden;
     }
+
+    /* ── Smoke particles ── */
+    .smoke-wrap {
+      position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0;
+    }
+    .smoke {
+      position: absolute; bottom: -20px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(200,200,200,0.10) 0%, transparent 70%);
+      animation: rise linear infinite;
+    }
+    @keyframes rise {
+      0%   { transform: translateY(0)    translateX(0)   scale(1);   opacity: 0; }
+      15%  { opacity: 1; }
+      85%  { opacity: 0.4; }
+      100% { transform: translateY(-90vh) translateX(30px) scale(4); opacity: 0; }
+    }
+
+    /* ── Page header ── */
+    .page-header {
+      display: flex; align-items: center; gap: 14px;
+      margin-bottom: 20px; position: relative; z-index: 1;
+    }
+    .page-header svg { flex-shrink: 0; filter: drop-shadow(0 0 8px rgba(249,115,22,0.5)); }
+    .page-header h1  { font-size: 1.5rem; font-weight: 800; color: #f97316;
+                       text-shadow: 0 0 20px rgba(249,115,22,0.4); }
+    .page-header p   { font-size: 0.8rem; color: #666; margin-top: 2px; }
+
+    /* page content sits above smoke layer */
+    .status-wrap, .info-row, .dash, .chart-panel, .panel { position: relative; z-index: 1; }
 
     h1 { font-size: 1.4rem; color: #f97316; margin-bottom: 4px; }
     .subtitle { font-size: 0.85rem; color: #888; margin-bottom: 20px; }
@@ -111,6 +148,38 @@
   </style>
 </head>
 <body>
+
+<!-- Smoke background particles -->
+<div class="smoke-wrap">
+  <div class="smoke" style="left:10%; width:60px;  height:60px;  animation-duration:14s; animation-delay:0s;"></div>
+  <div class="smoke" style="left:25%; width:40px;  height:40px;  animation-duration:10s; animation-delay:3s;"></div>
+  <div class="smoke" style="left:42%; width:80px;  height:80px;  animation-duration:18s; animation-delay:1s;"></div>
+  <div class="smoke" style="left:60%; width:50px;  height:50px;  animation-duration:12s; animation-delay:5s;"></div>
+  <div class="smoke" style="left:75%; width:70px;  height:70px;  animation-duration:16s; animation-delay:2s;"></div>
+  <div class="smoke" style="left:88%; width:45px;  height:45px;  animation-duration:11s; animation-delay:7s;"></div>
+</div>
+
+<!-- Page header -->
+<div class="page-header">
+  <svg width="40" height="40" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="22" cy="3"     r="2"   fill="#9ca3af" opacity="0.75"/>
+    <circle cx="24.5" cy="1.5" r="1.4" fill="#9ca3af" opacity="0.55"/>
+    <rect x="20" y="4"  width="4"  height="7"  rx="1"   fill="#c2410c"/>
+    <path d="M4 16 Q4 9 16 9 Q28 9 28 16 Z"             fill="#ea580c"/>
+    <rect x="13" y="7"  width="6"  height="3"  rx="1.5" fill="#fbbf24"/>
+    <rect x="4"  y="16" width="24" height="10" rx="2"   fill="#f97316"/>
+    <rect x="6"  y="18" width="5"  height="5"  rx="1"   fill="#7c2d12"/>
+    <line x1="7.5" y1="19.5" x2="9.5" y2="19.5" stroke="#f97316" stroke-width="0.8"/>
+    <line x1="7.5" y1="21"   x2="9.5" y2="21"   stroke="#f97316" stroke-width="0.8"/>
+    <line x1="7.5" y1="22.5" x2="9.5" y2="22.5" stroke="#f97316" stroke-width="0.8"/>
+    <rect x="7"  y="26" width="3" height="5" rx="1" fill="#9a3412"/>
+    <rect x="22" y="26" width="3" height="5" rx="1" fill="#9a3412"/>
+  </svg>
+  <div>
+    <h1>Oakford Smoker Monitor</h1>
+    <p>Real-time Bluetooth telemetry</p>
+  </div>
+</div>
 
 <div class="status-wrap">
   <div class="status-bar">
