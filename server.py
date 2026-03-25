@@ -42,7 +42,7 @@ def decode_packet(data: bytes):
 # ── App state ─────────────────────────────────────────────────────────────────
 app      = FastAPI()
 clients: set[WebSocket] = set()
-state    = {'last': None, 'ip': None, 'address': None, 'rssi': None, 'history': [], 'log_history': [], 'interval': 30}
+state    = {'last': None, 'ip': None, 'address': None, 'rssi': None, 'adapter': None, 'history': [], 'log_history': [], 'interval': 30}
 
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 async def broadcast(msg: dict):
@@ -73,7 +73,10 @@ async def sleep_to_next_tick(interval: int) -> None:
 # ── BLE polling loop ──────────────────────────────────────────────────────────
 async def find_smoker():
     print(f'Scanning for smoker ({TARGET_PREFIX}*)…')
-    devices = await BleakScanner.discover(timeout=12)
+    kwargs = {'timeout': 12, 'scanning_mode': 'active'}
+    if state['adapter']:
+        kwargs['adapter'] = state['adapter']
+    devices = await BleakScanner.discover(**kwargs)
     match = next((d for d in devices if d.name and d.name.startswith(TARGET_PREFIX)), None)
     if match:
         print(f'Found: {match.name}  ({match.address})')
@@ -91,7 +94,10 @@ async def read_rssi(address: str, timeout: float = 5.0) -> int | None:
             result = adv_data.rssi
             found.set()
 
-    async with BleakScanner(callback, scanning_mode='active'):
+    kwargs = {'scanning_mode': 'active'}
+    if state['adapter']:
+        kwargs['adapter'] = state['adapter']
+    async with BleakScanner(callback, **kwargs):
         try:
             await asyncio.wait_for(found.wait(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -125,7 +131,10 @@ async def poll_loop(interval: int):
             if rssi is not None:
                 state['rssi'] = rssi
 
-            async with BleakClient(state['address'], timeout=15) as client:
+            kwargs = {'timeout': 15}
+            if state['adapter']:
+                kwargs['adapter'] = state['adapter']
+            async with BleakClient(state['address'], **kwargs) as client:
                 # Read IP once
                 if not state['ip']:
                     try:
@@ -205,11 +214,14 @@ async def websocket_endpoint(ws: WebSocket):
         log.info(f'Client disconnected  ({len(clients)} total)')
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-async def main(interval: int, port: int, address: str | None):
+async def main(interval: int, port: int, address: str | None, adapter: str | None):
     state['interval'] = interval
     if address:
         print(f'Using hardcoded address: {address}')
         state['address'] = address
+    if adapter:
+        print(f'Using adapter: {adapter}')
+        state['adapter'] = adapter
 
     print(f'Starting web server on http://0.0.0.0:{port}')
 
@@ -226,6 +238,7 @@ if __name__ == '__main__':
     parser.add_argument('--interval', type=int,  default=30,   help='Poll interval in seconds (default: 30)')
     parser.add_argument('--port',     type=int,  default=8080, help='Web server port (default: 8080)')
     parser.add_argument('--address',  type=str,  default=None, help='Hardcode BLE address, skipping discovery (e.g. AA:BB:CC:DD:EE:FF)')
+    parser.add_argument('--adapter',  type=str,  default=None, help='Bluetooth adapter to use (e.g. hci1). Defaults to system default.')
     parser.add_argument('--debug',    action='store_true',     help='Enable verbose logging')
     args = parser.parse_args()
 
@@ -234,4 +247,4 @@ if __name__ == '__main__':
         format='%(asctime)s  %(levelname)-8s  %(message)s',
         datefmt='%H:%M:%S',
     )
-    asyncio.run(main(args.interval, args.port, args.address))
+    asyncio.run(main(args.interval, args.port, args.address, args.adapter))
