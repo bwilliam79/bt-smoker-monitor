@@ -200,7 +200,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     clients.add(ws)
     log.info(f'Client connected  ({len(clients)} total)')
-    if state['history']:
+    if state['history'] or state['log_history']:
         await ws.send_text(json.dumps({'type': 'history', 'data': state['history'], 'logs': state['log_history']}))
     elif state['last']:
         await ws.send_text(json.dumps(state['last']))
