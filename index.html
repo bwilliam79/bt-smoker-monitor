@@ -278,6 +278,9 @@ function setStatus(cls, text) {
   document.getElementById('statusDot').className = 'dot ' + cls;
   document.getElementById('statusText').textContent = text;
 }
+function setDashVisible(visible) {
+  document.querySelector('.dash').style.display = visible ? '' : 'none';
+}
 function toggleLog() {
   const body    = document.getElementById('logBody');
   const chevron = document.getElementById('logChevron');
@@ -615,6 +618,7 @@ function connect() {
 
   ws.onopen = () => {
     setStatus('connecting', 'Waiting for smoker…');
+    setDashVisible(false);
     log('SYS', 'WebSocket connected.', 'tag-sys');
   };
 
@@ -626,7 +630,7 @@ function connect() {
       if (d.data.length) updateDash(d.data[d.data.length - 1]);
       (d.logs || []).forEach(e => log(e.tag, e.msg, e.cls, new Date(e.ts * 1000)));
       log('SYS', `Session restored: ${d.data.length} data point(s), ${(d.logs||[]).length} log event(s).`, 'tag-sys');
-      if (d.smoker_online) setStatus('connected', 'Connected');
+      if (d.smoker_online) { setStatus('connected', 'Connected'); setDashVisible(true); }
       return;
     }
     if (d.smoker_offline) {
@@ -635,6 +639,7 @@ function connect() {
         log('WARN', 'Smoker offline — retrying…', 'tag-warn');
       }
       setStatus('connecting', 'Smoker unreachable…');
+      setDashVisible(false);
       return;
     }
     if (d.error) {
@@ -647,6 +652,7 @@ function connect() {
       log('SYS', 'Smoker reconnected.', 'tag-sys', tickDate);
     }
     setStatus('connected', 'Connected');
+    setDashVisible(true);
     updateDash(d);
     pushChartPoint(d, tickDate);
     checkAlarms(d);
