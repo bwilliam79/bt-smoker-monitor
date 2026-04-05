@@ -256,15 +256,17 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
     if state['adapter']:
         scanner_kwargs['bluez'] = {'adapter': state['adapter']}
 
-    devices = await BleakScanner.discover(**scanner_kwargs)
-    found_device = next(
-        (d for d in devices if d.name and d.name.startswith(TARGET_PREFIX)),
+    discovered = await BleakScanner.discover(**scanner_kwargs, return_adv=True)
+    found_pair = next(
+        ((dev, adv) for dev, adv in discovered.values()
+         if dev.name and dev.name.startswith(TARGET_PREFIX)),
         None,
     )
-    if not found_device:
+    if not found_pair:
         return None, None, None
 
-    found_rssi = getattr(found_device, 'rssi', None)
+    found_device, found_adv = found_pair
+    found_rssi = found_adv.rssi
     print(f'Found: {found_device.name}  ({found_device.address})  RSSI: {found_rssi} dBm')
 
     async with BleakClient(found_device, timeout=45) as client:
