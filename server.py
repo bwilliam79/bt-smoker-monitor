@@ -383,9 +383,50 @@ async def api_state():
 
 @app.get('/api/adapters')
 async def get_adapters():
-    """Return available Bluetooth HCI adapters detected on the host."""
-    adapters = sorted(os.path.basename(p) for p in glob.glob('/sys/class/bluetooth/hci*'))
-    return {'adapters': adapters, 'current': state.get('adapter') or ''}
+    """Return available Bluetooth HCI adapters with MAC address and USB vendor label."""
+    # Common USB Bluetooth vendor IDs → friendly names
+    USB_VENDORS = {
+        '0bda': 'Realtek',
+        '0a12': 'Cambridge Silicon Radio',
+        '0b05': 'ASUS',
+        '04ca': 'Lite-On',
+        '8087': 'Intel',
+        '0cf3': 'Qualcomm Atheros',
+        '0e8d': 'MediaTek',
+        '2357': 'TP-Link',
+        '13d3': 'IMC Networks',
+        '1286': 'Marvell',
+        '0489': 'Foxconn',
+    }
+
+    adapter_list = []
+    for p in sorted(glob.glob('/sys/class/bluetooth/hci*')):
+        hci = os.path.basename(p)
+
+        # MAC address
+        try:
+            addr = Path(p, 'address').read_text().strip()
+        except Exception:
+            addr = ''
+
+        # Walk sysfs to find USB vendor/product
+        vendor_id = ''
+        try:
+            dev_path = Path(p, 'device').resolve()
+            for candidate in [dev_path.parent, dev_path.parent.parent]:
+                vid_file = candidate / 'idVendor'
+                if vid_file.exists():
+                    vendor_id = vid_file.read_text().strip().lower()
+                    break
+        except Exception:
+            pass
+
+        vendor_name = USB_VENDORS.get(vendor_id, f'USB {vendor_id}' if vendor_id else 'Unknown')
+        label = f'{hci} — {addr} ({vendor_name})'
+
+        adapter_list.append({'id': hci, 'label': label, 'address': addr, 'vendor': vendor_name})
+
+    return {'adapters': adapter_list, 'current': state.get('adapter') or ''}
 
 @app.get('/api/config')
 async def get_config():
