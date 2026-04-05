@@ -234,39 +234,20 @@ async def check_notifications(dec: dict):
             n['probe_over_temp'][i] = False
 
 # ── BLE polling loop ──────────────────────────────────────────────────────────
-async def find_smoker():
+async def find_smoker() -> tuple[str, int | None] | tuple[None, None]:
+    """Scan for the smoker and return (address, rssi). RSSI captured here so
+    we avoid a second scan between discovery and connection."""
     print(f'Scanning for smoker ({TARGET_PREFIX}*)…')
     kwargs = {'timeout': 12, 'scanning_mode': 'active'}
     if state['adapter']:
         kwargs['bluez'] = {'adapter': state['adapter']}
-    devices = await BleakScanner.discover(**kwargs)
-    match = next((d for d in devices if d.name and d.name.startswith(TARGET_PREFIX)), None)
-    if match:
-        print(f'Found: {match.name}  ({match.address})')
-        return match.address
-    return None
-
-async def read_rssi(address: str, timeout: float = 5.0) -> int | None:
-    """Scan for a specific device and return its RSSI from advertisement data."""
-    result  = None
-    found   = asyncio.Event()
-
-    def callback(device, adv_data):
-        nonlocal result
-        if device.address.upper() == address.upper() and adv_data.rssi is not None:
-            result = adv_data.rssi
-            found.set()
-
-    kwargs = {'scanning_mode': 'active'}
-    if state['adapter']:
-        kwargs['bluez'] = {'adapter': state['adapter']}
-    async with BleakScanner(callback, **kwargs):
-        try:
-            await asyncio.wait_for(found.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            pass
-
-    return result
+    devices = await BleakScanner.discover(**kwargs, return_adv=True)
+    for device, adv in devices.values():
+        if device.name and device.name.startswith(TARGET_PREFIX):
+            rssi = adv.rssi if adv.rssi is not None else getattr(device, 'rssi', None)
+            print(f'Found: {device.name}  ({device.address})  RSSI: {rssi} dBm')
+            return device.address, rssi
+    return None, None
 
 async def poll_loop(interval: int):
     smoker_was_offline = False
@@ -279,10 +260,13 @@ async def poll_loop(interval: int):
         # Discover smoker if we don't have an address yet
         if not state['address']:
             try:
-                state['address'] = await find_smoker()
+                addr, rssi = await find_smoker()
             except Exception as e:
                 log.warning(f'BLE scan error: {e}')
-                state['address'] = None
+                addr, rssi = None, None
+            state['address'] = addr
+            if rssi is not None:
+                state['rssi'] = rssi
             if not state['address']:
                 await broadcast({'smoker_offline': True})
                 if not smoker_was_offline:
@@ -293,11 +277,7 @@ async def poll_loop(interval: int):
                 continue
 
         try:
-            # Read RSSI from advertisement data before connecting
-            rssi = await read_rssi(state['address'], timeout=5.0)
-            if rssi is not None:
-                state['rssi'] = rssi
-
+            # Connect immediately — RSSI already captured during discovery scan
             kwargs = {'timeout': 30}
             if state['adapter']:
                 kwargs['bluez'] = {'adapter': state['adapter']}
@@ -318,6 +298,7 @@ async def poll_loop(interval: int):
                 if smoker_was_offline:
                     print('Smoker reconnected.')
                     add_log('SYS', 'Smoker reconnected.', 'tag-sys', tick_time)
+                    await notify('Smoker Connected', 'Smoker monitor reconnected.', tags='white_check_mark')
                     smoker_was_offline = False
 
                 # ── Update probe histories and compute server-side ETAs ────────
@@ -360,11 +341,58 @@ async def poll_loop(interval: int):
                 log.info(f'Smoker: {dec["grill"]}°F  Set: {dec["setPoint"]}°F  Probes: [{probes_str}]')
 
         except (BleakError, Exception) as e:
-            await broadcast({'smoker_offline': True})
             print(f'BLE connect error: {type(e).__name__}: {e}')
+            # On timeout or device-not-found, do one immediate retry before
+            # declaring the smoker offline for this interval
+            if isinstance(e, (TimeoutError, asyncio.TimeoutError)) or 'not found' in str(e).lower():
+                print('Retrying connection once…')
+                try:
+                    kwargs = {'timeout': 30}
+                    if state['adapter']:
+                        kwargs['bluez'] = {'adapter': state['adapter']}
+                    async with BleakClient(state['address'], **kwargs) as client:
+                        raw = await client.read_gatt_char(CHAR_TEMP)
+                        dec = decode_packet(bytes(raw))
+                    if dec:
+                        # Retry succeeded — skip the offline handling below
+                        dec['ip']       = state['ip']
+                        dec['address']  = state['address']
+                        dec['rssi']     = state['rssi']
+                        dec['ts']       = tick_time
+                        dec['interval'] = state['interval']
+                        for i, (temp, target) in enumerate(zip(dec['probes'], dec['probeTargets'])):
+                            if temp >= PROBE_DISCONNECTED:
+                                state['probe_history'][i].clear()
+                                state['probe_eta'][i]     = None
+                                state['probe_stalled'][i] = False
+                            else:
+                                state['probe_history'][i].append({'temp': temp, 'ts': tick_time})
+                                eta_mins, stalled = compute_probe_eta(state['probe_history'][i], target, temp)
+                                state['probe_eta'][i]     = eta_mins
+                                state['probe_stalled'][i] = stalled
+                        dec['eta']     = state['probe_eta'][:]
+                        dec['stalled'] = state['probe_stalled'][:]
+                        if smoker_was_offline:
+                            print('Smoker reconnected (retry).')
+                            add_log('SYS', 'Smoker reconnected.', 'tag-sys', tick_time)
+                            await notify('Smoker Connected', 'Smoker monitor reconnected.', tags='white_check_mark')
+                            smoker_was_offline = False
+                        state['last'] = dec
+                        state['history'].append(dec)
+                        cutoff = time.time() - HISTORY_MAX_AGE
+                        state['history'] = [p for p in state['history'] if p['ts'] >= cutoff]
+                        await broadcast(dec)
+                        await check_notifications(dec)
+                        await asyncio.sleep(max(tick_time + interval - time.time(), 0.001))
+                        continue
+                except Exception as e2:
+                    print(f'Retry also failed: {type(e2).__name__}: {e2}')
+
+            await broadcast({'smoker_offline': True})
             if not smoker_was_offline:
                 print('Smoker unreachable — will keep retrying.')
                 add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', tick_time)
+                await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
                 smoker_was_offline = True
             # Clear address so next iteration re-scans
             state['address'] = None
