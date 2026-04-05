@@ -408,8 +408,9 @@ async function openSettings() {
     sel.innerHTML = '<option value="">System default</option>';
     adp.adapters.forEach(a => {
       const opt = document.createElement('option');
-      opt.value = a; opt.textContent = a;
-      if (a === adp.current) opt.selected = true;
+      opt.value = a.id;
+      opt.textContent = a.label;
+      if (a.id === adp.current) opt.selected = true;
       sel.appendChild(opt);
     });
     _originalAdapter = adp.current || '';
