@@ -243,52 +243,34 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
     """
     Scan for the smoker, connect, and read temperature.
 
-    Strategy: keep the scanner running during connect+service-discovery so
-    the device stays in BlueZ's D-Bus cache, then stop it before the actual
-    GATT reads to free the radio.
+    Uses BleakScanner.discover() so the scanner stops cleanly before we
+    connect.  The BLEDevice object returned by discover() retains the BlueZ
+    D-Bus path so BleakClient can connect without re-scanning.
+
+    Critical: do NOT pass bluez={'adapter': …} to BleakClient.  The
+    BLEDevice already carries the correct adapter path from the scanner;
+    specifying it again triggers a different BlueZ connection path that
+    causes le-connection-abort-by-local on Realtek adapters.
 
     Returns (decoded_packet, ble_device, rssi) or (None, None, None).
     """
-    device_found = asyncio.Event()
-    found_device = None
-    found_rssi   = None
-
-    def detection_callback(device, adv_data):
-        nonlocal found_device, found_rssi
-        if device.name and device.name.startswith(TARGET_PREFIX):
-            found_device = device
-            found_rssi   = adv_data.rssi
-            device_found.set()
-
-    scanner_kwargs = {'scanning_mode': 'active'}
+    print(f'Scanning for smoker ({TARGET_PREFIX}*)…')
+    scanner_kwargs = {'timeout': 15, 'scanning_mode': 'active'}
     if state['adapter']:
         scanner_kwargs['bluez'] = {'adapter': state['adapter']}
 
-    print(f'Scanning for smoker ({TARGET_PREFIX}*)…')
-    scanner = BleakScanner(detection_callback, **scanner_kwargs)
-    await scanner.start()
-
-    try:
-        await asyncio.wait_for(device_found.wait(), timeout=15)
-    except asyncio.TimeoutError:
-        await scanner.stop()
+    devices = await BleakScanner.discover(**scanner_kwargs)
+    found_device = next(
+        (d for d in devices if d.name and d.name.startswith(TARGET_PREFIX)),
+        None,
+    )
+    if not found_device:
         return None, None, None
 
+    found_rssi = found_device.rssi
     print(f'Found: {found_device.name}  ({found_device.address})  RSSI: {found_rssi} dBm')
 
-    # Do NOT pass bluez adapter kwarg to BleakClient — the BLEDevice already
-    # carries the correct adapter's D-Bus path from the scanner.  Specifying
-    # the adapter explicitly here triggers a different BlueZ connection path
-    # that causes le-connection-abort-by-local on Realtek adapters.
-    client_kwargs = {'timeout': 45}
-
-    client = BleakClient(found_device, **client_kwargs)
-    try:
-        print('Connecting…')
-        await client.connect()
-        print('Connected — stopping scanner')
-        await scanner.stop()  # free radio for GATT reads
-
+    async with BleakClient(found_device, timeout=45) as client:
         if not state['ip']:
             try:
                 raw_ip = await client.read_gatt_char(CHAR_IP)
@@ -298,14 +280,6 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
                 pass
         raw = await client.read_gatt_char(CHAR_TEMP)
         return decode_packet(bytes(raw)), found_device, found_rssi
-    except Exception:
-        await scanner.stop()
-        raise
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
 
 async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool, ble_device, rssi) -> bool:
     """Update state and broadcast a successful reading. Returns new smoker_was_offline value."""
