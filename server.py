@@ -406,9 +406,11 @@ async def post_config(body: dict):
 
     if adapter_changed:
         print(f'Adapter changed to "{adapter or "default"}" — restarting…')
-        # Give the HTTP response time to reach the client before exiting.
-        # Docker will restart the container and pick up the new config.
-        asyncio.get_event_loop().call_later(0.8, lambda: os.kill(os.getpid(), signal.SIGTERM))
+        # Give the HTTP response time to reach the client, then hard-exit.
+        # os._exit() bypasses uvicorn/asyncio shutdown so the process
+        # actually terminates. Docker will restart the container and pick
+        # up the new adapter from the config file.
+        asyncio.get_event_loop().call_later(0.8, lambda: os._exit(0))
 
     return {'ok': True, 'ntfy_topic': topic, 'adapter': adapter, 'restarting': adapter_changed}
 
