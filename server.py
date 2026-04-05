@@ -240,11 +240,11 @@ async def check_notifications(dec: dict):
 # ── BLE polling loop ──────────────────────────────────────────────────────────
 async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
     """
-    Scan for the smoker, stop the scanner, then connect and read.
+    Scan for the smoker, connect, and read temperature.
 
-    Stopping the scanner before connecting frees the radio for GATT traffic.
-    The BLEDevice object retains its BlueZ D-Bus path so the device is still
-    reachable by BleakClient even after the scanner exits.
+    Strategy: keep the scanner running during connect+service-discovery so
+    the device stays in BlueZ's D-Bus cache, then stop it before the actual
+    GATT reads to free the radio.
 
     Returns (decoded_packet, ble_device, rssi) or (None, None, None).
     """
@@ -264,20 +264,28 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
         scanner_kwargs['bluez'] = {'adapter': state['adapter']}
 
     print(f'Scanning for smoker ({TARGET_PREFIX}*)…')
-    async with BleakScanner(detection_callback, **scanner_kwargs) as _scanner:
-        try:
-            await asyncio.wait_for(device_found.wait(), timeout=15)
-        except asyncio.TimeoutError:
-            return None, None, None
-        # Scanner context exits here — radio is now free for GATT
+    scanner = BleakScanner(detection_callback, **scanner_kwargs)
+    await scanner.start()
+
+    try:
+        await asyncio.wait_for(device_found.wait(), timeout=15)
+    except asyncio.TimeoutError:
+        await scanner.stop()
+        return None, None, None
 
     print(f'Found: {found_device.name}  ({found_device.address})  RSSI: {found_rssi} dBm')
 
-    client_kwargs = {'timeout': 30}
+    client_kwargs = {'timeout': 45}
     if state['adapter']:
         client_kwargs['bluez'] = {'adapter': state['adapter']}
 
-    async with BleakClient(found_device, **client_kwargs) as client:
+    client = BleakClient(found_device, **client_kwargs)
+    try:
+        print('Connecting…')
+        await client.connect()
+        print('Connected — stopping scanner')
+        await scanner.stop()  # free radio for GATT reads
+
         if not state['ip']:
             try:
                 raw_ip = await client.read_gatt_char(CHAR_IP)
@@ -287,6 +295,14 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
                 pass
         raw = await client.read_gatt_char(CHAR_TEMP)
         return decode_packet(bytes(raw)), found_device, found_rssi
+    except Exception:
+        await scanner.stop()
+        raise
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool, ble_device, rssi) -> bool:
     """Update state and broadcast a successful reading. Returns new smoker_was_offline value."""
