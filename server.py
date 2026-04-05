@@ -204,14 +204,14 @@ async def check_notifications(dec: dict):
     # Grill at temp
     if not n['grill_at_temp'] and abs(grill - setpoint) <= 5 and grill <= setpoint + 5:
         n['grill_at_temp'] = True
-        await notify('Smoker at Temperature', f'Grill reached {setpoint}°F set point.', tags='fire')
+        await notify('Smoker at Temperature', f'Smoker reached {setpoint}°F set point.', tags='fire')
     if n['grill_at_temp'] and grill < setpoint - 10:
         n['grill_at_temp'] = False
 
     # Grill over temp
     if not n['grill_over_temp'] and grill > setpoint + 5:
         n['grill_over_temp'] = True
-        await notify('⚠️ Smoker Over Temperature', f'Grill is {grill}°F — set point is {setpoint}°F.',
+        await notify('⚠️ Smoker Over Temperature', f'Smoker is {grill}°F — set point is {setpoint}°F.',
                      priority='urgent', tags='rotating_light')
     if n['grill_over_temp'] and grill <= setpoint + 5:
         n['grill_over_temp'] = False
@@ -267,7 +267,7 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
     if not found_device:
         return None, None, None
 
-    found_rssi = found_device.rssi
+    found_rssi = getattr(found_device, 'rssi', None)
     print(f'Found: {found_device.name}  ({found_device.address})  RSSI: {found_rssi} dBm')
 
     async with BleakClient(found_device, timeout=45) as client:
