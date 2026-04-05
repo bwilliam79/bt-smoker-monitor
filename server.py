@@ -3,14 +3,11 @@ BT Smoker Monitor — BLE poller + WebSocket server
 Usage: python3 server.py [--interval 30] [--port 8080]
 """
 import asyncio
-import glob
 import json
 import logging
 import argparse
 import math
 import os
-import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -164,7 +161,7 @@ async def broadcast(msg: dict):
 
 # ── Config file ───────────────────────────────────────────────────────────────
 def load_config() -> dict:
-    """Load config from CONFIG_PATH. Returns {} if missing or malformed."""
+    """Load ntfy_topic from CONFIG_PATH. Returns {} if missing or malformed."""
     try:
         if CONFIG_PATH.exists():
             return json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
@@ -172,11 +169,11 @@ def load_config() -> dict:
         log.warning(f'Could not read config file: {e}')
     return {}
 
-def save_config(data: dict) -> None:
-    """Persist config dict to CONFIG_PATH, creating parent dirs as needed."""
+def save_config(ntfy_topic: str) -> None:
+    """Persist ntfy_topic to CONFIG_PATH."""
     try:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        CONFIG_PATH.write_text(json.dumps({'ntfy_topic': ntfy_topic}, indent=2), encoding='utf-8')
     except Exception as e:
         log.warning(f'Could not write config file: {e}')
 
@@ -377,79 +374,17 @@ async def favicon():
 async def api_state():
     return state['last'] or {}
 
-@app.get('/api/adapters')
-async def get_adapters():
-    """Return available Bluetooth HCI adapters with MAC address and USB vendor label."""
-    # Common USB Bluetooth vendor IDs → friendly names
-    USB_VENDORS = {
-        '0bda': 'Realtek',
-        '0a12': 'Cambridge Silicon Radio',
-        '0b05': 'ASUS',
-        '04ca': 'Lite-On',
-        '8087': 'Intel',
-        '0cf3': 'Qualcomm Atheros',
-        '0e8d': 'MediaTek',
-        '2357': 'TP-Link',
-        '13d3': 'IMC Networks',
-        '1286': 'Marvell',
-        '0489': 'Foxconn',
-    }
-
-    adapter_list = []
-    for p in sorted(glob.glob('/sys/class/bluetooth/hci*')):
-        hci = os.path.basename(p)
-
-        # MAC address
-        try:
-            addr = Path(p, 'address').read_text().strip()
-        except Exception:
-            addr = ''
-
-        # Walk sysfs to find USB vendor/product
-        vendor_id = ''
-        try:
-            dev_path = Path(p, 'device').resolve()
-            for candidate in [dev_path.parent, dev_path.parent.parent]:
-                vid_file = candidate / 'idVendor'
-                if vid_file.exists():
-                    vendor_id = vid_file.read_text().strip().lower()
-                    break
-        except Exception:
-            pass
-
-        vendor_name = USB_VENDORS.get(vendor_id, f'USB {vendor_id}' if vendor_id else 'Unknown')
-        label = f'{hci} — {addr} ({vendor_name})'
-
-        adapter_list.append({'id': hci, 'label': label, 'address': addr, 'vendor': vendor_name})
-
-    return {'adapters': adapter_list, 'current': state.get('adapter') or ''}
-
 @app.get('/api/config')
 async def get_config():
-    return {
-        'ntfy_topic': state.get('ntfy_topic') or '',
-        'adapter':    state.get('adapter')    or '',
-    }
+    return {'ntfy_topic': state.get('ntfy_topic') or ''}
 
 @app.post('/api/config')
 async def post_config(body: dict):
-    topic           = str(body.get('ntfy_topic', '')).strip()
-    adapter         = str(body.get('adapter',    '')).strip()
-    adapter_changed = adapter != (state.get('adapter') or '')
-
+    topic = str(body.get('ntfy_topic', '')).strip()
     state['ntfy_topic'] = topic or None
-    save_config({'ntfy_topic': topic, 'adapter': adapter})
-    print(f'Config saved — ntfy: {topic or "(none)"}, adapter: {adapter or "(default)"}')
-
-    if adapter_changed:
-        print(f'Adapter changed to "{adapter or "default"}" — restarting…')
-        # Give the HTTP response time to reach the client, then hard-exit.
-        # os._exit() bypasses uvicorn/asyncio shutdown so the process
-        # actually terminates. Docker will restart the container and pick
-        # up the new adapter from the config file.
-        asyncio.get_event_loop().call_later(0.8, lambda: os._exit(0))
-
-    return {'ok': True, 'ntfy_topic': topic, 'adapter': adapter, 'restarting': adapter_changed}
+    save_config(topic)
+    print(f'Config saved — ntfy: {topic or "(none)"}')
+    return {'ok': True, 'ntfy_topic': topic}
 
 @app.post('/api/clear-history')
 async def clear_history():
@@ -481,24 +416,19 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
     state['interval']   = interval
     state['ntfy_topic'] = ntfy_topic or None   # baseline from CLI/env
 
-    # Config file overrides CLI/env — allows runtime updates without restart
+    # Config file persists ntfy_topic across restarts
     cfg = load_config()
     if 'ntfy_topic' in cfg:
         state['ntfy_topic'] = cfg['ntfy_topic'] or None
-    elif ntfy_topic:
-        pass  # already set above
-    if 'adapter' in cfg and cfg['adapter']:
-        state['adapter'] = cfg['adapter']
+
+    if adapter:
+        state['adapter'] = adapter
 
     print(f'ntfy topic : {state["ntfy_topic"] or "(disabled)"}')
     print(f'BT adapter : {state["adapter"] or "(system default)"}')
     if address:
         print(f'Using hardcoded address: {address}')
         state['address'] = address
-    if adapter:
-        print(f'Using adapter: {adapter}')
-        state['adapter'] = adapter
-        add_log('SYS', f'Using BT adapter: {adapter}', 'tag-sys', time.time())
 
     print(f'Starting web server on http://0.0.0.0:{port}')
 
