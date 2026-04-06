@@ -202,6 +202,7 @@
     }
     .modal-input:focus { border-color: #f97316; }
     .modal-input::placeholder { color: #444; }
+    select.modal-input { appearance: auto; cursor: pointer; }
     .modal-hint { font-size: 0.7rem; color: #555; margin-top: 4px; }
     .modal-hint a { color: #f97316; text-decoration: none; }
     .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
@@ -228,6 +229,15 @@
 <div class="modal-overlay" id="settingsOverlay" onclick="overlayClick(event)">
   <div class="modal">
     <h2>⚙️ Settings</h2>
+    <div class="modal-row">
+      <label class="modal-label" for="adapterSelect">Bluetooth Adapter</label>
+      <select id="adapterSelect" class="modal-input">
+        <option value="">Loading adapters…</option>
+      </select>
+      <span class="modal-hint">
+        Select which Bluetooth adapter to use for scanning. Change takes effect on the next scan cycle.
+      </span>
+    </div>
     <div class="modal-row">
       <label class="modal-label" for="ntfyInput">ntfy.sh Push Notification Topic</label>
       <input id="ntfyInput" class="modal-input" type="text"
@@ -381,9 +391,30 @@ function clearChart() {
 // ── Settings modal ────────────────────────────────────────────────────────────
 async function openSettings() {
   try {
-    const res = await fetch('/api/config');
-    const cfg = await res.json();
+    const [cfgRes, adapterRes] = await Promise.all([
+      fetch('/api/config'),
+      fetch('/api/adapters'),
+    ]);
+    const cfg      = await cfgRes.json();
+    const adapters = await adapterRes.json();
     document.getElementById('ntfyInput').value = cfg.ntfy_topic || '';
+
+    const select  = document.getElementById('adapterSelect');
+    const current = cfg.adapter || '';
+    select.innerHTML = '';
+    if (adapters.adapters.length === 0) {
+      select.innerHTML = '<option value="">No adapters found</option>';
+    } else {
+      adapters.adapters.forEach(a => {
+        const opt   = document.createElement('option');
+        opt.value   = a.id;
+        const label = a.name ? `${a.id} — ${a.name}` : a.id;
+        const info  = [a.bus, a.address, a.up ? 'UP' : 'DOWN'].filter(Boolean).join(', ');
+        opt.textContent = `${label}  (${info})`;
+        if (a.id === current) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
   } catch (e) { /* non-fatal — open anyway */ }
   document.getElementById('modalSaved').style.display = 'none';
   document.getElementById('settingsOverlay').classList.add('open');
@@ -399,16 +430,20 @@ function overlayClick(e) {
 
 async function saveSettings() {
   const topic   = document.getElementById('ntfyInput').value.trim();
+  const adapter = document.getElementById('adapterSelect').value;
   const savedEl = document.getElementById('modalSaved');
   try {
     const res = await fetch('/api/config', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ ntfy_topic: topic }),
+      body:    JSON.stringify({ ntfy_topic: topic, adapter: adapter }),
     });
     if (!res.ok) throw new Error(await res.text());
+    const result = await res.json();
     savedEl.style.display = 'inline';
-    log('SYS', `Settings saved — ntfy: ${topic || '(none)'}.`, 'tag-sys');
+    const parts = [`ntfy: ${topic || '(none)'}`];
+    if (result.adapter_changed) parts.push(`adapter: ${adapter || '(auto)'}`);
+    log('SYS', `Settings saved — ${parts.join(', ')}.`, 'tag-sys');
     setTimeout(closeSettings, 1200);
   } catch (e) {
     log('ERROR', `Failed to save settings: ${e}`, 'tag-error');

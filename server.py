@@ -8,6 +8,7 @@ import logging
 import argparse
 import math
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -170,11 +171,14 @@ def load_config() -> dict:
         log.warning(f'Could not read config file: {e}')
     return {}
 
-def save_config(ntfy_topic: str) -> None:
-    """Persist ntfy_topic to CONFIG_PATH."""
+def save_config(ntfy_topic: str, adapter: str = '') -> None:
+    """Persist ntfy_topic and adapter to CONFIG_PATH."""
     try:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps({'ntfy_topic': ntfy_topic}, indent=2), encoding='utf-8')
+        data = {'ntfy_topic': ntfy_topic}
+        if adapter:
+            data['adapter'] = adapter
+        CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding='utf-8')
     except Exception as e:
         log.warning(f'Could not write config file: {e}')
 
@@ -382,15 +386,55 @@ async def api_state():
 
 @app.get('/api/config')
 async def get_config():
-    return {'ntfy_topic': state.get('ntfy_topic') or ''}
+    return {
+        'ntfy_topic': state.get('ntfy_topic') or '',
+        'adapter': state.get('adapter') or '',
+    }
 
 @app.post('/api/config')
 async def post_config(body: dict):
     topic = str(body.get('ntfy_topic', '')).strip()
     state['ntfy_topic'] = topic or None
-    save_config(topic)
-    print(f'Config saved — ntfy: {topic or "(none)"}')
-    return {'ok': True, 'ntfy_topic': topic}
+
+    adapter = str(body.get('adapter', '')).strip()
+    old_adapter = state.get('adapter') or ''
+    state['adapter'] = adapter or None
+    adapter_changed = adapter != old_adapter
+
+    save_config(topic, adapter)
+    parts = [f'ntfy: {topic or "(none)"}']
+    if adapter_changed:
+        parts.append(f'adapter: {adapter or "(auto)"}')
+        print(f'Bluetooth adapter changed to {adapter or "(auto)"} — takes effect next scan cycle.')
+    print(f'Config saved — {", ".join(parts)}')
+    return {'ok': True, 'ntfy_topic': topic, 'adapter': adapter, 'adapter_changed': adapter_changed}
+
+@app.get('/api/adapters')
+async def get_adapters():
+    """List available Bluetooth adapters with friendly names via hciconfig."""
+    adapters = []
+    try:
+        result = subprocess.run(['hciconfig', '-a'], capture_output=True, text=True, timeout=5)
+        current = None
+        for line in result.stdout.splitlines():
+            if line and not line[0].isspace() and ':' in line:
+                hci = line.split(':')[0].strip()
+                current = {'id': hci, 'name': '', 'address': '', 'bus': '', 'up': False}
+                adapters.append(current)
+            elif current:
+                stripped = line.strip()
+                if stripped.startswith('BD Address:'):
+                    current['address'] = stripped.split('BD Address:')[1].split()[0]
+                if stripped.startswith('Name:'):
+                    current['name'] = stripped.split("'")[1] if "'" in stripped else stripped.split('Name:')[1].strip()
+                if 'Bus:' in stripped:
+                    bus_part = stripped.split('Bus:')[1].strip().split()[0] if 'Bus:' in stripped else ''
+                    current['bus'] = bus_part
+                if 'UP' in stripped.split() and 'RUNNING' in stripped.split():
+                    current['up'] = True
+    except Exception as e:
+        log.warning(f'Failed to enumerate adapters: {e}')
+    return {'adapters': adapters, 'current': state.get('adapter') or ''}
 
 @app.post('/api/clear-history')
 async def clear_history():
@@ -422,13 +466,16 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
     state['interval']   = interval
     state['ntfy_topic'] = ntfy_topic or None   # baseline from CLI/env
 
-    # Config file persists ntfy_topic across restarts
+    # Config file persists settings across restarts
     cfg = load_config()
     if 'ntfy_topic' in cfg:
         state['ntfy_topic'] = cfg['ntfy_topic'] or None
 
+    # CLI --adapter wins, then config file, then None (system default)
     if adapter:
         state['adapter'] = adapter
+    elif 'adapter' in cfg and cfg['adapter']:
+        state['adapter'] = cfg['adapter']
 
     print(f'ntfy topic : {state["ntfy_topic"] or "(disabled)"}')
     print(f'BT adapter : {state["adapter"] or "(system default)"}')
