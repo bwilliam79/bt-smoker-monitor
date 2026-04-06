@@ -313,6 +313,7 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
 
     dec['ip']       = state['ip']
     dec['address']  = state['address']
+    dec['adapter']  = state.get('adapter') or 'default'
     dec['rssi']     = state['rssi']
     dec['ts']       = tick_time
     dec['interval'] = state['interval']
