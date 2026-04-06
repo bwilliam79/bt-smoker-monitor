@@ -334,6 +334,7 @@
     <div style="padding:8px 12px 4px;border-bottom:1px solid #1e1e1e;">
       <span style="font-size:0.75rem;color:#555;">Smoker IP: <strong id="infoIp" style="color:#93c5fd;">—</strong></span>
       <span style="font-size:0.75rem;color:#555;margin-left:16px;">BT Address: <strong id="infoBtMac" style="color:#93c5fd;">—</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;">Adapter: <strong id="infoAdapter" style="color:#93c5fd;">—</strong></span>
       <span style="font-size:0.75rem;color:#555;margin-left:16px;">Signal: <strong id="infoRssi" style="color:#93c5fd;">—</strong></span>
       <span style="font-size:0.75rem;color:#555;margin-left:16px;">Poll Interval: <strong id="infoInterval" style="color:#93c5fd;">—</strong></span>
     </div>
@@ -548,6 +549,7 @@ function updateDash(d) {
 
   if (d.ip)       document.getElementById('infoIp').textContent       = d.ip;
   if (d.address)  document.getElementById('infoBtMac').textContent    = d.address;
+  if (d.adapter)  document.getElementById('infoAdapter').textContent  = d.adapter;
   if (d.interval) document.getElementById('infoInterval').textContent = `${d.interval}s`;
   if (d.rssi != null) {
     const el    = document.getElementById('infoRssi');
