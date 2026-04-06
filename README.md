@@ -46,14 +46,14 @@ docker run -d \
   --net=host \
   --privileged \
   -v /var/run/dbus:/var/run/dbus \
-  -v /path/to/smoker-data:/data \
+  -v /path/to/bt-smoker-monitor/data:/data \
   ghcr.io/bwilliam79/bt-smoker-monitor:latest \
   --port 8080
 ```
 
 Then open **http://\<host-ip\>:8080** in any browser.
 
-> **Tip:** Replace `/path/to/smoker-data` with a directory on your host (e.g. `/home/user/docker/smoker-data`). This is where the app persists its ntfy topic across container restarts.
+> **Tip:** Replace `/path/to/bt-smoker-monitor/data` with a directory on your host (e.g. `/home/user/docker/bt-smoker-monitor/data`). This is where the app persists its ntfy topic across container restarts.
 
 ### Bluetooth flags explained
 
