@@ -62,7 +62,7 @@ Then open **http://\<host-ip\>:8080** in any browser.
 | `--net=host` | Lets Bleak scan for BLE advertisements on the host's radio |
 | `--privileged` | Grants the container access to host Bluetooth hardware |
 | `-v /var/run/dbus:/var/run/dbus` | Gives the container access to the host's `bluetoothd` via D-Bus |
-| `-v ...:/data` | Persists the ntfy topic across container restarts |
+| `-v ...:/data` | Persists settings (ntfy topic, adapter choice) across container restarts |
 
 ### Options
 
@@ -71,7 +71,7 @@ Then open **http://\<host-ip\>:8080** in any browser.
 | `--port` | `8080` | Web server port |
 | `--interval` | `30` | BLE poll interval in seconds |
 | `--address` | *(auto)* | Hardcode a BLE address to skip scanning |
-| `--adapter` | *(auto)* | Bluetooth adapter to use (e.g. `hci1`). Defaults to the system default adapter. |
+| `--adapter` | *(auto)* | Initial Bluetooth adapter (e.g. `hci1`). Can also be changed at runtime via the in-app settings UI. |
 | `--ntfy-topic` | *(none)* | ntfy.sh topic for push notifications. Can also be set via `NTFY_TOPIC` env var or the in-app settings UI |
 | `--debug` | off | Enable verbose poll logging |
 
@@ -85,19 +85,10 @@ Click the **⚙️** icon in the top-right corner to open the settings modal.
 
 | Setting | Description |
 |---------|-------------|
+| **Bluetooth Adapter** | Select which Bluetooth adapter to use. Lists all available adapters with their friendly name, bus type, MAC address, and status. Change takes effect on the next scan cycle — no restart required. |
 | **ntfy.sh Topic** | Push notification topic. Leave blank to disable. |
 
-The ntfy topic is saved to `/data/config.json` and persists across container restarts.
-
-### Bluetooth adapter
-
-If you have multiple Bluetooth adapters, specify which one to use with the `--adapter` flag at startup:
-
-```bash
-docker run ... ghcr.io/bwilliam79/bt-smoker-monitor:latest --port 8080 --adapter hci1
-```
-
-Run `hciconfig` on your host to list available adapters and their addresses. If `--adapter` is omitted, the system default adapter is used.
+Settings are saved to `/data/config.json` and persist across container restarts.
 
 ---
 
@@ -221,7 +212,7 @@ journalctl -u smoker -f         # follow logs
 
 The smoker only supports **one BLE connection at a time**. Close the official Nexgrill app before using this monitor, otherwise connections will fail.
 
-If you have multiple Bluetooth adapters, pass `--adapter hciX` at startup to select the correct one. Run `hciconfig` on your host to identify adapters by their MAC address.
+If you have multiple Bluetooth adapters, select the one to use from the in-app settings (⚙️). The dropdown lists each adapter with its friendly name, bus type, and MAC address. You can also set the initial adapter at startup with `--adapter hciX`.
 
 ---
 
