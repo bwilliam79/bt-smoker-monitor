@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py index.html favicon.svg manifest.json service-worker.js \
      icon-192.png icon-512.png apple-touch-icon.png ./
+COPY vendor/ ./vendor/
 
 EXPOSE 8080
 
