@@ -457,6 +457,32 @@ async def index():
 async def favicon():
     return Response(Path('favicon.svg').read_bytes(), media_type='image/svg+xml')
 
+@app.get('/manifest.json')
+async def manifest():
+    return Response(Path('manifest.json').read_bytes(), media_type='application/manifest+json')
+
+@app.get('/service-worker.js')
+async def service_worker():
+    # Service-Worker-Allowed lets the worker scope the whole site.
+    # Cache-Control: no-cache so browsers pick up SW updates on every load.
+    return Response(
+        Path('service-worker.js').read_bytes(),
+        media_type='application/javascript',
+        headers={'Service-Worker-Allowed': '/', 'Cache-Control': 'no-cache'},
+    )
+
+@app.get('/icon-192.png')
+async def icon_192():
+    return Response(Path('icon-192.png').read_bytes(), media_type='image/png')
+
+@app.get('/icon-512.png')
+async def icon_512():
+    return Response(Path('icon-512.png').read_bytes(), media_type='image/png')
+
+@app.get('/apple-touch-icon.png')
+async def apple_touch_icon():
+    return Response(Path('apple-touch-icon.png').read_bytes(), media_type='image/png')
+
 @app.get('/api/state')
 async def api_state():
     last = state['last'] or {}
