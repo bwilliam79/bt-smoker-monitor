@@ -417,14 +417,21 @@ function clearLog() {
   logEntries = 0;
   document.getElementById('logCount').textContent = 0;
 }
-function clearChart() {
-  chartTimestamps.length = 0;
-  chartLabels.length = 0;
-  Object.values(DS).forEach(arr => arr.length = 0);
-  chart.update();
-  fetch('/api/clear-history', { method: 'POST' })
-    .then(r => { if (!r.ok) log('ERROR', `Clear history failed: HTTP ${r.status}`, 'tag-error'); })
-    .catch(err => log('ERROR', `Clear history failed: ${err}`, 'tag-error'));
+async function clearChart() {
+  // Send the POST first; only clear the local chart once the server confirms.
+  // Otherwise a failed POST leaves the UI empty while the server still has
+  // data — the next live tick then re-populates a partial chart, which is
+  // confusing.
+  try {
+    const res = await fetch('/api/clear-history', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    chartTimestamps.length = 0;
+    chartLabels.length = 0;
+    Object.values(DS).forEach(arr => arr.length = 0);
+    chart.update();
+  } catch (err) {
+    log('ERROR', `Clear history failed: ${err.message || err}`, 'tag-error');
+  }
 }
 
 // ── Settings modal ────────────────────────────────────────────────────────────
@@ -484,6 +491,7 @@ async function saveSettings() {
     });
     if (!res.ok) throw new Error(await res.text());
     const result = await res.json();
+    if (result.ok === false) throw new Error(result.error || 'Server reported failure');
     savedEl.style.display = 'inline';
     const parts = [`ntfy: ${topic || '(none)'}`];
     if (result.adapter_changed) parts.push(`adapter: ${adapter || '(auto)'}`);
@@ -584,8 +592,11 @@ function pushChartPoint(d, date = new Date(), skipUpdate = false) {
   DS.p2.push(d.probes[1] < PROBE_DISCONNECTED ? d.probes[1] : null);
   DS.p2Target.push(d.probes[1] < PROBE_DISCONNECTED && d.probeTargets[1] < PROBE_DISCONNECTED ? d.probeTargets[1] : null);
 
-  // Trim entries older than 24 hours
-  const cutoff = Date.now() - CHART_WINDOW_MS;
+  // Trim entries older than 24 hours — anchored on the newest point's
+  // timestamp rather than Date.now() so clock skew between server and client
+  // can't drop/keep the wrong side of the window during history restore.
+  const newestTs = chartTimestamps[chartTimestamps.length - 1];
+  const cutoff = newestTs - CHART_WINDOW_MS;
   while (chartTimestamps.length && chartTimestamps[0] < cutoff) {
     chartTimestamps.shift();
     chartLabels.shift();
@@ -897,7 +908,23 @@ function connect() {
         }
       }
 
-      if (d.data.length) updateDash(d.data[d.data.length - 1]);
+      if (d.data.length) {
+        // Seed alarm-fired flags from the newest restored point so the very
+        // next live tick doesn't re-fire "reached set temperature" TTS for a
+        // smoker that's been at temp for hours already.
+        const latest = d.data[d.data.length - 1];
+        if (d.smoker_online) {
+          grillAlarmFired     = Math.abs(latest.grill - latest.setPoint) <= 5;
+          grillOverTempFired  = latest.grill > latest.setPoint + 5;
+          latest.probes.forEach((temp, i) => {
+            const target = latest.probeTargets[i];
+            if (temp >= PROBE_DISCONNECTED || target >= PROBE_DISCONNECTED) return;
+            alarmFired[i]    = temp >= target;
+            overTempFired[i] = temp > target + 5;
+          });
+        }
+        updateDash(latest);
+      }
       (d.logs || []).forEach(e => log(e.tag, e.msg, e.cls, new Date(e.ts * 1000)));
       log('SYS', `Session restored: ${d.data.length} data point(s), ${(d.logs||[]).length} log event(s).`, 'tag-sys');
       if (d.smoker_online) { setStatus('connected', 'Connected'); setDashVisible(true); }
