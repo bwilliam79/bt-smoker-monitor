@@ -787,17 +787,29 @@ function announce(msg) {
 }
 
 function checkAlarms(d) {
-  // Smoker alarm
-  if (!grillOverTempFired && d.grill > d.setPoint + 5) {
-    grillOverTempFired = true;
-    startGrillOverTempAlarm();
-  }
-  if (grillOverTempFired && d.grill <= d.setPoint + 5) {
-    clearGrillOverTempAlarm();
+  // Smoker off / cooldown: skip all grill alarms so a hot grill after the
+  // user powers down doesn't fire the over-temp siren, and so a cold grill
+  // doesn't announce "reached set temperature of 0 degrees". Mirrors the
+  // server-side setpoint > 0 guard in check_notifications.
+  if (d.setPoint <= 0) {
+    if (grillOverTempFired) clearGrillOverTempAlarm();
+    grillOverTempFired = false;
+    grillAlarmFired    = false;
+    stopGrillAtTempTimer();
+    document.getElementById('grillAtTempTimer').textContent = '';
+  } else {
+    // Smoker alarm
+    if (!grillOverTempFired && d.grill > d.setPoint + 5) {
+      grillOverTempFired = true;
+      startGrillOverTempAlarm();
+    }
+    if (grillOverTempFired && d.grill <= d.setPoint + 5) {
+      clearGrillOverTempAlarm();
+    }
   }
 
-  const grillAtTemp    = !grillOverTempFired && Math.abs(d.grill - d.setPoint) <= 5;
-  const grillUnderTemp = !grillOverTempFired && d.grill < d.setPoint - 5;
+  const grillAtTemp    = d.setPoint > 0 && !grillOverTempFired && Math.abs(d.grill - d.setPoint) <= 5;
+  const grillUnderTemp = d.setPoint > 0 && !grillOverTempFired && d.grill < d.setPoint - 5;
 
   if (grillAtTemp) {
     startGrillAtTempTimer();
@@ -926,8 +938,15 @@ function connect() {
         // stale last-known reading gets written into the hidden dash DOM and
         // briefly flashes when visibility flips.
         const latest = d.data[d.data.length - 1];
-        grillAlarmFired     = Math.abs(latest.grill - latest.setPoint) <= 5;
-        grillOverTempFired  = latest.grill > latest.setPoint + 5;
+        // setPoint <= 0 means the smoker is off/cooling down — leave grill
+        // alarm flags cleared so we don't misfire on the next live tick.
+        if (latest.setPoint > 0) {
+          grillAlarmFired    = Math.abs(latest.grill - latest.setPoint) <= 5;
+          grillOverTempFired = latest.grill > latest.setPoint + 5;
+        } else {
+          grillAlarmFired    = false;
+          grillOverTempFired = false;
+        }
         latest.probes.forEach((temp, i) => {
           const target = latest.probeTargets[i];
           if (temp >= PROBE_DISCONNECTED || target >= PROBE_DISCONNECTED) return;
