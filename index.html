@@ -626,7 +626,7 @@ function updateDash(d) {
       document.getElementById(`valP${i+1}`).textContent    = p;
       document.getElementById(`valP${i+1}`).classList.remove('temp-na');
       document.getElementById(`targetP${i+1}`).textContent = target < PROBE_DISCONNECTED ? `Target: ${target}°F` : '';
-      displayEta(i, d.eta ? d.eta[i] : null, d.stalled ? d.stalled[i] : false);
+      displayEta(i, d.eta ? d.eta[i] : null, d.stalled ? d.stalled[i] : false, target);
     }
   });
 
@@ -644,9 +644,15 @@ function updateDash(d) {
 }
 
 // ── ETA display (server-computed) ─────────────────────────────────────────────
-function displayEta(index, etaMins, stalled) {
+function displayEta(index, etaMins, stalled, target) {
   const el = document.getElementById(`etaP${index + 1}`);
   if (!el) return;
+  if (target === undefined || target === null || target >= PROBE_DISCONNECTED) {
+    el.textContent     = 'No target temp';
+    el.style.color     = '#f97316';
+    el.style.fontStyle = 'italic';
+    return;
+  }
   if (stalled) {
     el.textContent   = 'In stall – ETA paused';
     el.style.color   = '#f97316';
