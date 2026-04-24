@@ -592,11 +592,13 @@ function pushChartPoint(d, date = new Date(), skipUpdate = false) {
   DS.p2.push(d.probes[1] < PROBE_DISCONNECTED ? d.probes[1] : null);
   DS.p2Target.push(d.probes[1] < PROBE_DISCONNECTED && d.probeTargets[1] < PROBE_DISCONNECTED ? d.probeTargets[1] : null);
 
-  // Trim entries older than 24 hours — anchored on the newest point's
-  // timestamp rather than Date.now() so clock skew between server and client
-  // can't drop/keep the wrong side of the window during history restore.
+  // Trim entries older than 24 hours. Anchor on max(newestTs, Date.now()) —
+  // newestTs alone defends against server/client clock skew during history
+  // restore, but if a single far-past history point arrives first it would
+  // pin the cutoff to that ancient epoch and stick around indefinitely.
+  // Date.now() as a floor breaks that trap.
   const newestTs = chartTimestamps[chartTimestamps.length - 1];
-  const cutoff = newestTs - CHART_WINDOW_MS;
+  const cutoff = Math.max(newestTs, Date.now()) - CHART_WINDOW_MS;
   while (chartTimestamps.length && chartTimestamps[0] < cutoff) {
     chartTimestamps.shift();
     chartLabels.shift();
@@ -872,9 +874,17 @@ function connect() {
       return;
     }
     if (d.type === 'history') {
+      // Reset chart arrays before replay. `connect()` is re-invoked on every
+      // WS reconnect and the server unconditionally replays state['history'];
+      // without this, restored points get appended after live ticks from the
+      // previous session, producing duplicates and non-monotonic timestamps
+      // that the newest-ts trim logic won't clean up.
+      chartTimestamps.length = 0;
+      chartLabels.length = 0;
+      Object.values(DS).forEach(arr => arr.length = 0);
+
       // Detect clock skew: if the newest server point is wildly ahead/behind
-      // the client wall clock, chart trimming (which uses Date.now()) will
-      // misbehave. Log once so the user knows to fix NTP.
+      // the client wall clock, log once so the user knows to fix NTP.
       if (d.data.length) {
         const newestTs = d.data[d.data.length - 1].ts * 1000;
         const skewMin  = Math.round((Date.now() - newestTs) / 60000);
@@ -908,21 +918,22 @@ function connect() {
         }
       }
 
-      if (d.data.length) {
+      if (d.data.length && d.smoker_online) {
         // Seed alarm-fired flags from the newest restored point so the very
         // next live tick doesn't re-fire "reached set temperature" TTS for a
-        // smoker that's been at temp for hours already.
+        // smoker that's been at temp for hours already. Also skip
+        // updateDash() entirely when the smoker is offline — otherwise the
+        // stale last-known reading gets written into the hidden dash DOM and
+        // briefly flashes when visibility flips.
         const latest = d.data[d.data.length - 1];
-        if (d.smoker_online) {
-          grillAlarmFired     = Math.abs(latest.grill - latest.setPoint) <= 5;
-          grillOverTempFired  = latest.grill > latest.setPoint + 5;
-          latest.probes.forEach((temp, i) => {
-            const target = latest.probeTargets[i];
-            if (temp >= PROBE_DISCONNECTED || target >= PROBE_DISCONNECTED) return;
-            alarmFired[i]    = temp >= target;
-            overTempFired[i] = temp > target + 5;
-          });
-        }
+        grillAlarmFired     = Math.abs(latest.grill - latest.setPoint) <= 5;
+        grillOverTempFired  = latest.grill > latest.setPoint + 5;
+        latest.probes.forEach((temp, i) => {
+          const target = latest.probeTargets[i];
+          if (temp >= PROBE_DISCONNECTED || target >= PROBE_DISCONNECTED) return;
+          alarmFired[i]    = temp >= target;
+          overTempFired[i] = temp > target + 5;
+        });
         updateDash(latest);
       }
       (d.logs || []).forEach(e => log(e.tag, e.msg, e.cls, new Date(e.ts * 1000)));
