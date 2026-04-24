@@ -263,6 +263,11 @@ async def sleep_to_next_tick(interval: int) -> None:
 
 # ── Notification checker ──────────────────────────────────────────────────────
 async def check_notifications(dec: dict):
+    # Defensive: never fire alarms based on a stale/synthesized reading. Today
+    # only _process_reading calls this after a successful scan, but guard in
+    # case a future caller feeds us a cached payload.
+    if not state.get('smoker_online'):
+        return
     probes   = dec['probes']
     targets  = dec['probeTargets']
     grill    = dec['grill']
@@ -377,10 +382,13 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
             if ph and tick_time - ph[-1]['ts'] > PROBE_HISTORY_STALE_SECS:
                 ph.clear()
             ph.append({'temp': temp, 'ts': tick_time})
+            # Trim expired points with pop(0) in a tight loop — avoids the
+            # O(n) list-comprehension rebuild we'd otherwise do every tick in
+            # steady state.
             ph_cutoff = tick_time - PROBE_HISTORY_MAX_AGE_SECS
-            if ph and ph[0]['ts'] < ph_cutoff:
-                state['probe_history'][i] = [p for p in ph if p['ts'] >= ph_cutoff]
-            eta_mins, stalled = compute_probe_eta(state['probe_history'][i], target, temp)
+            while ph and ph[0]['ts'] < ph_cutoff:
+                ph.pop(0)
+            eta_mins, stalled = compute_probe_eta(ph, target, temp)
             state['probe_eta'][i]     = eta_mins
             state['probe_stalled'][i] = stalled
             if stalled:
@@ -459,8 +467,10 @@ async def poll_loop(interval: int):
                     await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
                     smoker_was_offline = True
 
-        except BleakError:
-            log.exception('BLE error during scan/read')
+        except (BleakError, asyncio.TimeoutError):
+            # bleak can raise asyncio.TimeoutError (not BleakError) on scan or
+            # connect timeouts — treat both as routine "smoker out of range".
+            log.exception('BLE error/timeout during scan/read')
             _mark_disconnected()
             await broadcast({'smoker_offline': True, 'connected': False})
             if not smoker_was_offline:
@@ -674,6 +684,10 @@ async def websocket_endpoint(ws: WebSocket):
     log.info(f'Client connected  ({len(clients)} total)')
     if state['history'] or state['log_history']:
         await ws.send_text(json.dumps({'type': 'history', 'data': state['history'], 'logs': state['log_history'], 'smoker_online': state['smoker_online']}))
+        # The initial history payload can be hundreds of KB over 24h; refresh
+        # last-seen after a successful send so a slow mobile client isn't
+        # reaped by the idle sweeper before it gets a chance to ack.
+        clients[ws] = time.time()
     elif state['last'] and state['smoker_online']:
         await ws.send_text(json.dumps(state['last']))
     try:
