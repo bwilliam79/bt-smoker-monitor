@@ -600,21 +600,28 @@ async def get_config():
 
 @app.post('/api/config')
 async def post_config(body: dict):
-    topic = str(body.get('ntfy_topic', '')).strip()
-    state['ntfy_topic'] = topic or None
+    # Empty/missing ntfy_topic is ignored (preserves existing value). Prevents a
+    # save that only meant to update adapter from silently wiping the topic and
+    # leaving notify() as a no-op until the user notices alarms aren't firing.
+    submitted_topic = str(body.get('ntfy_topic', '')).strip()
+    if submitted_topic:
+        state['ntfy_topic'] = submitted_topic
+    elif state.get('ntfy_topic'):
+        print('Ignoring empty ntfy_topic in config save (preserving existing).')
+    effective_topic = state.get('ntfy_topic') or ''
 
     adapter = str(body.get('adapter', '')).strip()
     old_adapter = state.get('adapter') or ''
     state['adapter'] = adapter or None
     adapter_changed = adapter != old_adapter
 
-    save_config(topic, adapter)
-    parts = [f'ntfy: {topic or "(none)"}']
+    save_config(effective_topic, adapter)
+    parts = [f'ntfy: {effective_topic or "(none)"}']
     if adapter_changed:
         parts.append(f'adapter: {adapter or "(auto)"}')
         print(f'Bluetooth adapter changed to {adapter or "(auto)"} — takes effect next scan cycle.')
     print(f'Config saved — {", ".join(parts)}')
-    return {'ok': True, 'ntfy_topic': topic, 'adapter': adapter, 'adapter_changed': adapter_changed}
+    return {'ok': True, 'ntfy_topic': effective_topic, 'adapter': adapter, 'adapter_changed': adapter_changed}
 
 @app.get('/api/adapters')
 async def get_adapters():
