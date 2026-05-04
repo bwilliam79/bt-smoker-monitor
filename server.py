@@ -166,9 +166,11 @@ state    = {
     'interval':      30,
     'ntfy_topic':    None,
     # per-probe ETA state (reset when probe disconnects)
-    'probe_history': [[], []],    # [{temp, ts}, …] since probe first detected
-    'probe_eta':     [None, None],  # minutes to target, or None
-    'probe_stalled': [False, False],
+    'probe_history':    [[], []],    # [{temp, ts}, …] since probe first detected
+    'probe_eta':        [None, None],  # minutes to target, or None
+    'probe_stalled':    [False, False],
+    # UI-set probe targets (override BLE targets when not None; persisted to config)
+    'probe_ui_targets': [None, None],
     # notification dedup
     'notified': {
         'probe_at_temp':      [False, False],
@@ -220,13 +222,15 @@ def load_config() -> dict:
             for key in ('ntfy_topic', 'adapter'):
                 if key in raw and raw[key] is not None:
                     out[key] = str(raw[key]).strip()
+            if 'probe_targets' in raw and isinstance(raw['probe_targets'], list):
+                out['probe_targets'] = raw['probe_targets']
             return out
     except Exception:
         log.exception('Could not read config file')
     return {}
 
-def save_config(ntfy_topic: str, adapter: str = '') -> None:
-    """Persist ntfy_topic and adapter to CONFIG_PATH.
+def save_config(ntfy_topic: str, adapter: str = '', probe_targets: list | None = None) -> None:
+    """Persist ntfy_topic, adapter, and probe_targets to CONFIG_PATH.
 
     Read-modify-write so unrelated keys added by future features (or by a
     hand-edit) aren't silently dropped on save.
@@ -246,6 +250,8 @@ def save_config(ntfy_topic: str, adapter: str = '') -> None:
             existing['adapter'] = adapter
         else:
             existing.pop('adapter', None)
+        if probe_targets is not None:
+            existing['probe_targets'] = probe_targets
         CONFIG_PATH.write_text(json.dumps(existing, indent=2), encoding='utf-8')
     except Exception:
         log.exception('Could not write config file')
@@ -300,7 +306,7 @@ async def check_notifications(dec: dict):
     # target means it's overdone.
     if setpoint > 0 and not n['grill_over_temp'] and grill > setpoint + 25:
         n['grill_over_temp'] = True
-        await notify('⚠️ Smoker Over Temperature', f'Smoker is {grill}°F — set point is {setpoint}°F.',
+        await notify('Smoker Over Temperature', f'Smoker is {grill}°F — set point is {setpoint}°F.',
                      priority='urgent', tags='rotating_light')
     if n['grill_over_temp'] and grill <= setpoint + 25:
         n['grill_over_temp'] = False
@@ -310,14 +316,16 @@ async def check_notifications(dec: dict):
     if (setpoint > 0 and n['grill_reached_once']
             and not n['grill_under_temp'] and grill < setpoint - 10):
         n['grill_under_temp'] = True
-        await notify('⚠️ Smoker Under Temperature',
+        await notify('Smoker Under Temperature',
                      f'Smoker dropped to {grill}°F — set point is {setpoint}°F.',
                      priority='high', tags='warning')
     if n['grill_under_temp'] and grill >= setpoint - 5:
         n['grill_under_temp'] = False
 
-    # Per-probe
-    for i, (temp, target) in enumerate(zip(probes, targets)):
+    # Per-probe (use UI-set target when available, fall back to BLE target)
+    ui_targets = state['probe_ui_targets']
+    for i, (temp, ble_target) in enumerate(zip(probes, targets)):
+        target = ui_targets[i] if ui_targets[i] is not None else ble_target
         if temp >= PROBE_DISCONNECTED or target >= PROBE_DISCONNECTED:
             n['probe_at_temp'][i]   = False
             n['probe_over_temp'][i] = False
@@ -332,7 +340,7 @@ async def check_notifications(dec: dict):
 
         if not n['probe_over_temp'][i] and temp > target + 5:
             n['probe_over_temp'][i] = True
-            await notify(f'⚠️ Probe {i + 1} Over Temperature',
+            await notify(f'Probe {i + 1} Over Temperature',
                          f'Probe {i + 1} is {temp}°F — target is {target}°F.',
                          priority='urgent', tags='rotating_light')
         if n['probe_over_temp'][i] and temp <= target + 5:
@@ -395,7 +403,8 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
     if rssi is not None:
         state['rssi'] = rssi
 
-    for i, (temp, target) in enumerate(zip(dec['probes'], dec['probeTargets'])):
+    for i, (temp, ble_target) in enumerate(zip(dec['probes'], dec['probeTargets'])):
+        eff_target = state['probe_ui_targets'][i] if state['probe_ui_targets'][i] is not None else ble_target
         if temp >= PROBE_DISCONNECTED:
             state['probe_history'][i].clear()
             state['probe_eta'][i]     = None
@@ -414,21 +423,22 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
             ph_cutoff = tick_time - PROBE_HISTORY_MAX_AGE_SECS
             while ph and ph[0]['ts'] < ph_cutoff:
                 ph.pop(0)
-            eta_mins, stalled = compute_probe_eta(ph, target, temp)
+            eta_mins, stalled = compute_probe_eta(ph, eff_target, temp)
             state['probe_eta'][i]     = eta_mins
             state['probe_stalled'][i] = stalled
             if stalled:
                 log.info(f'Probe {i + 1} stall detected at {temp}°F')
 
-    dec['ip']        = state['ip']
-    dec['address']   = state['address']
-    dec['adapter']   = state.get('adapter') or 'default'
-    dec['rssi']      = state['rssi']
-    dec['ts']        = tick_time
-    dec['interval']  = state['interval']
-    dec['eta']       = state['probe_eta'][:]
-    dec['stalled']   = state['probe_stalled'][:]
-    dec['connected'] = True
+    dec['ip']              = state['ip']
+    dec['address']         = state['address']
+    dec['adapter']         = state.get('adapter') or 'default'
+    dec['rssi']            = state['rssi']
+    dec['ts']              = tick_time
+    dec['interval']        = state['interval']
+    dec['eta']             = state['probe_eta'][:]
+    dec['stalled']         = state['probe_stalled'][:]
+    dec['probeUiTargets']  = state['probe_ui_targets'][:]
+    dec['connected']       = True
 
     state['last'] = dec
     state['smoker_online'] = True
@@ -589,6 +599,7 @@ async def api_state():
     # an empty body".
     last = dict(state['last']) if state['last'] else {}
     last['connected'] = bool(state.get('smoker_online'))
+    last['probeUiTargets'] = state.get('probe_ui_targets', [None, None])[:]
     return last
 
 @app.get('/api/config')
@@ -615,13 +626,30 @@ async def post_config(body: dict):
     state['adapter'] = adapter or None
     adapter_changed = adapter != old_adapter
 
-    save_config(effective_topic, adapter)
+    save_config(effective_topic, adapter, state.get('probe_ui_targets'))
     parts = [f'ntfy: {effective_topic or "(none)"}']
     if adapter_changed:
         parts.append(f'adapter: {adapter or "(auto)"}')
         print(f'Bluetooth adapter changed to {adapter or "(auto)"} — takes effect next scan cycle.')
     print(f'Config saved — {", ".join(parts)}')
     return {'ok': True, 'ntfy_topic': effective_topic, 'adapter': adapter, 'adapter_changed': adapter_changed}
+
+@app.post('/api/probe-targets')
+async def post_probe_targets(body: dict):
+    raw = body.get('targets', [None, None])
+    for i in range(2):
+        v = raw[i] if i < len(raw) else None
+        if v is None:
+            state['probe_ui_targets'][i] = None
+        else:
+            try:
+                iv = int(v)
+                if 32 <= iv <= 500:
+                    state['probe_ui_targets'][i] = iv
+            except (ValueError, TypeError):
+                pass
+    save_config(state.get('ntfy_topic') or '', state.get('adapter') or '', state['probe_ui_targets'])
+    return {'ok': True, 'targets': state['probe_ui_targets']}
 
 @app.get('/api/adapters')
 async def get_adapters():
@@ -718,7 +746,7 @@ async def websocket_endpoint(ws: WebSocket):
     clients[ws] = time.time()
     log.info(f'Client connected  ({len(clients)} total)')
     if state['history'] or state['log_history']:
-        await ws.send_text(json.dumps({'type': 'history', 'data': state['history'], 'logs': state['log_history'], 'smoker_online': state['smoker_online']}))
+        await ws.send_text(json.dumps({'type': 'history', 'data': state['history'], 'logs': state['log_history'], 'smoker_online': state['smoker_online'], 'probe_ui_targets': state['probe_ui_targets']}))
         # The initial history payload can be hundreds of KB over 24h; refresh
         # last-seen after a successful send so a slow mobile client isn't
         # reaped by the idle sweeper before it gets a chance to ack.
@@ -772,8 +800,21 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
     elif 'adapter' in cfg and cfg['adapter']:
         state['adapter'] = cfg['adapter']
 
+    # Restore UI-set probe targets from config
+    if 'probe_targets' in cfg and isinstance(cfg['probe_targets'], list):
+        for i in range(min(2, len(cfg['probe_targets']))):
+            v = cfg['probe_targets'][i]
+            if v is not None:
+                try:
+                    iv = int(v)
+                    if 32 <= iv <= 500:
+                        state['probe_ui_targets'][i] = iv
+                except (ValueError, TypeError):
+                    pass
+
     print(f'ntfy topic : {state["ntfy_topic"] or "(disabled)"}')
     print(f'BT adapter : {state["adapter"] or "(system default)"}')
+    print(f'Probe targets: {state["probe_ui_targets"]}')
     if address:
         print(f'Using hardcoded address: {address}')
         state['address'] = address
