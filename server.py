@@ -399,6 +399,41 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
         await notify('Smoker Connected', 'Smoker monitor reconnected.', tags='white_check_mark')
         smoker_was_offline = False
 
+    # Seed `notified` from the first reading after startup. Without this, a
+    # container restart mid-cook resets `grill_reached_once` to False, which
+    # silently disarms the under-temp alarm because that gate requires the
+    # smoker to have been within 5°F of setpoint during this server session.
+    # Also pre-mark currently at-temp / over-temp so we don't re-announce
+    # state the user already saw before the restart.
+    if not state.get('_seeded'):
+        state['_seeded'] = True
+        n  = state['notified']
+        sp = dec['setPoint']
+        gr = dec['grill']
+        if sp > 0:
+            # Treat as already-reached-once when the grill is in cooking range.
+            # `sp - 30` covers the common "dropped 20°F below setpoint" case;
+            # `gr > 100` keeps a cold start (room temp) from arming the alert.
+            if gr >= sp - 30 and gr > 100:
+                n['grill_reached_once'] = True
+            if abs(gr - sp) <= 5:
+                n['grill_at_temp'] = True
+            if gr > sp + 25:
+                n['grill_over_temp'] = True
+                n['grill_reached_once'] = True
+        # Probe at-temp / over-temp: pre-mark so a restart mid-cook with a
+        # probe already past target doesn't re-announce on the next tick.
+        ui_targets = state['probe_ui_targets']
+        for i, (pt, bt) in enumerate(zip(dec['probes'], dec['probeTargets'])):
+            tgt = ui_targets[i] if ui_targets[i] is not None else bt
+            if pt >= PROBE_DISCONNECTED or tgt >= PROBE_DISCONNECTED:
+                continue
+            if pt >= tgt:
+                n['probe_at_temp'][i] = True
+            if pt > tgt + 5:
+                n['probe_over_temp'][i] = True
+        log.info(f'Seeded notification state from first reading: {n}')
+
     state['address']    = ble_device.address if ble_device else state['address']
     if rssi is not None:
         state['rssi'] = rssi
