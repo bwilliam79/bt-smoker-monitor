@@ -134,6 +134,18 @@
     .temp-set     { font-size: 0.72rem; color: #888; margin-top: 6px; }
     .temp-eta     { font-size: 0.7rem; color: #555; margin-top: 3px; font-style: italic; }
 
+    .probe-target-row { display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 6px; }
+    .probe-target-lbl { font-size: 0.72rem; color: #888; }
+    .probe-target-input {
+      background: transparent; border: none; border-bottom: 1px dashed #555;
+      color: #fde68a; font-size: 0.72rem; width: 42px; text-align: center;
+      outline: none; padding: 0 2px; font-family: inherit;
+      -moz-appearance: textfield;
+    }
+    .probe-target-input:focus { border-bottom-color: #f97316; }
+    .probe-target-input::-webkit-outer-spin-button,
+    .probe-target-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
     @keyframes pulse-red {
       0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); border-color: rgba(239,68,68,0.3); }
       50%       { box-shadow: 0 0 12px 4px rgba(239,68,68,0.6); border-color: rgba(239,68,68,0.9); }
@@ -316,22 +328,30 @@
     <div class="temp-set" id="setGrill"></div>
     <div class="temp-eta" id="grillAtTempTimer"></div>
   </div>
-  <div class="temp-card probe" id="cardP1">
+  <div class="temp-card probe" id="cardP1" style="display:none">
     <div class="temp-label">Probe 1</div>
     <div class="temp-val-row">
       <div class="temp-val temp-na" id="valP1">N/A</div>
       <div class="temp-unit">°F</div>
     </div>
-    <div class="temp-set" id="targetP1"></div>
+    <div class="probe-target-row">
+      <span class="probe-target-lbl">Target:</span>
+      <input class="probe-target-input" id="targetInputP1" type="number" min="32" max="500" step="5" placeholder="—" />
+      <span class="probe-target-lbl">°F</span>
+    </div>
     <div class="temp-eta" id="etaP1"></div>
   </div>
-  <div class="temp-card probe probe2" id="cardP2">
+  <div class="temp-card probe probe2" id="cardP2" style="display:none">
     <div class="temp-label">Probe 2</div>
     <div class="temp-val-row">
       <div class="temp-val temp-na" id="valP2">N/A</div>
       <div class="temp-unit">°F</div>
     </div>
-    <div class="temp-set" id="targetP2"></div>
+    <div class="probe-target-row">
+      <span class="probe-target-lbl">Target:</span>
+      <input class="probe-target-input" id="targetInputP2" type="number" min="32" max="500" step="5" placeholder="—" />
+      <span class="probe-target-lbl">°F</span>
+    </div>
     <div class="temp-eta" id="etaP2"></div>
   </div>
 </div>
@@ -366,6 +386,35 @@
 
 <script>
 const PROBE_DISCONNECTED = 999;
+
+// ── Probe target helpers ──────────────────────────────────────────────────────
+let lastData = null;
+
+function effectiveProbeTarget(d, i) {
+  const ui = d.probeUiTargets && d.probeUiTargets[i];
+  return (ui != null) ? ui : d.probeTargets[i];
+}
+
+async function saveProbeTarget(probeIndex, value) {
+  const targets = lastData ? [...(lastData.probeUiTargets || [null, null])] : [null, null];
+  const parsed = value !== '' ? parseInt(value, 10) : null;
+  targets[probeIndex] = (parsed != null && !isNaN(parsed)) ? parsed : null;
+  try {
+    const res = await fetch('/api/probe-targets', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ targets }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      if (lastData) lastData.probeUiTargets = data.targets;
+      const label = targets[probeIndex] != null ? `${targets[probeIndex]}°F` : 'none';
+      log('SYS', `Probe ${probeIndex + 1} target set to ${label}.`, 'tag-sys');
+    }
+  } catch (e) {
+    log('ERROR', `Failed to set probe ${probeIndex + 1} target: ${e}`, 'tag-error');
+  }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const pad = n => String(n).padStart(2,'0');
@@ -587,10 +636,12 @@ function pushChartPoint(d, date = new Date(), skipUpdate = false) {
   chartLabels.push(fmtTime(date));
   DS.grill.push(d.grill);
   DS.grillTarget.push(d.setPoint);
+  const p1tgt = effectiveProbeTarget(d, 0);
+  const p2tgt = effectiveProbeTarget(d, 1);
   DS.p1.push(d.probes[0] < PROBE_DISCONNECTED ? d.probes[0] : null);
-  DS.p1Target.push(d.probes[0] < PROBE_DISCONNECTED && d.probeTargets[0] < PROBE_DISCONNECTED ? d.probeTargets[0] : null);
+  DS.p1Target.push(d.probes[0] < PROBE_DISCONNECTED && p1tgt != null && p1tgt < PROBE_DISCONNECTED ? p1tgt : null);
   DS.p2.push(d.probes[1] < PROBE_DISCONNECTED ? d.probes[1] : null);
-  DS.p2Target.push(d.probes[1] < PROBE_DISCONNECTED && d.probeTargets[1] < PROBE_DISCONNECTED ? d.probeTargets[1] : null);
+  DS.p2Target.push(d.probes[1] < PROBE_DISCONNECTED && p2tgt != null && p2tgt < PROBE_DISCONNECTED ? p2tgt : null);
 
   // Trim entries older than 24 hours. Anchor on max(newestTs, Date.now()) —
   // newestTs alone defends against server/client clock skew during history
@@ -615,18 +666,21 @@ function updateDash(d) {
   document.getElementById('setGrill').textContent  = `Target: ${d.setPoint}°F`;
 
   d.probes.forEach((p, i) => {
-    const cardEl   = document.getElementById(`cardP${i+1}`);
-    const target   = d.probeTargets[i];
+    const cardEl = document.getElementById(`cardP${i+1}`);
+    const effTgt = effectiveProbeTarget(d, i);
     if (p >= PROBE_DISCONNECTED) {
       cardEl.style.display = 'none';
       cardEl.classList.remove('active');
     } else {
       cardEl.style.display = '';
       cardEl.classList.add('active');
-      document.getElementById(`valP${i+1}`).textContent    = p;
+      document.getElementById(`valP${i+1}`).textContent = p;
       document.getElementById(`valP${i+1}`).classList.remove('temp-na');
-      document.getElementById(`targetP${i+1}`).textContent = target < PROBE_DISCONNECTED ? `Target: ${target}°F` : '';
-      displayEta(i, d.eta ? d.eta[i] : null, d.stalled ? d.stalled[i] : false, target);
+      const inp = document.getElementById(`targetInputP${i+1}`);
+      if (document.activeElement !== inp) {
+        inp.value = (effTgt != null && effTgt < PROBE_DISCONNECTED) ? effTgt : '';
+      }
+      displayEta(i, d.eta ? d.eta[i] : null, d.stalled ? d.stalled[i] : false, effTgt);
     }
   });
 
@@ -890,8 +944,8 @@ function checkAlarms(d) {
 
   // Probe alarms
   d.probes.forEach((temp, i) => {
-    const target = d.probeTargets[i];
-    if (temp >= PROBE_DISCONNECTED || target >= PROBE_DISCONNECTED) return;
+    const target = effectiveProbeTarget(d, i);
+    if (temp >= PROBE_DISCONNECTED || target == null || target >= PROBE_DISCONNECTED) return;
 
     // At-temp: one-time siren + announce + browser notification + ntfy (server-side).
     if (!alarmFired[i] && temp >= target) {
@@ -999,6 +1053,17 @@ function connect() {
         // stale last-known reading gets written into the hidden dash DOM and
         // briefly flashes when visibility flips.
         const latest = d.data[d.data.length - 1];
+
+        // Apply current UI probe targets from history message and seed inputs.
+        if (d.probe_ui_targets) {
+          latest.probeUiTargets = d.probe_ui_targets;
+          [0, 1].forEach(i => {
+            const v = d.probe_ui_targets[i];
+            const inp = document.getElementById(`targetInputP${i + 1}`);
+            if (v != null) inp.value = v;
+          });
+        }
+
         // setPoint <= 0 means the smoker is off/cooling down — leave grill
         // alarm flags cleared so we don't misfire on the next live tick.
         if (latest.setPoint > 0) {
@@ -1016,11 +1081,12 @@ function connect() {
           grillUnderTempFired = false;
         }
         latest.probes.forEach((temp, i) => {
-          const target = latest.probeTargets[i];
-          if (temp >= PROBE_DISCONNECTED || target >= PROBE_DISCONNECTED) return;
+          const target = effectiveProbeTarget(latest, i);
+          if (temp >= PROBE_DISCONNECTED || target == null || target >= PROBE_DISCONNECTED) return;
           alarmFired[i]    = temp >= target;
           overTempFired[i] = temp > target + 5;
         });
+        lastData = latest;
         updateDash(latest);
       }
       (d.logs || []).forEach(e => log(e.tag, e.msg, e.cls, new Date(e.ts * 1000)));
@@ -1048,6 +1114,7 @@ function connect() {
     }
     setStatus('connected', 'Connected');
     setDashVisible(true);
+    lastData = d;
     updateDash(d);
     pushChartPoint(d, tickDate);
     checkAlarms(d);
@@ -1072,6 +1139,13 @@ function connect() {
 }
 
 connect();
+
+// ── Probe target input wiring ─────────────────────────────────────────────────
+[0, 1].forEach(i => {
+  const inp = document.getElementById(`targetInputP${i + 1}`);
+  inp.addEventListener('change', () => saveProbeTarget(i, inp.value));
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); });
+});
 
 // ── PWA service worker registration ──────────────────────────────────────────
 if ('serviceWorker' in navigator) {
