@@ -410,17 +410,17 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
         n  = state['notified']
         sp = dec['setPoint']
         gr = dec['grill']
-        if sp > 0:
-            # Treat as already-reached-once when the grill is in cooking range.
-            # `sp - 30` covers the common "dropped 20°F below setpoint" case;
-            # `gr > 100` keeps a cold start (room temp) from arming the alert.
-            if gr >= sp - 30 and gr > 100:
-                n['grill_reached_once'] = True
+        if sp > 0 and gr > 100:
+            # Anything above warm room temp on a smoker that's actively
+            # cooking (setpoint > 0) means the cook is in progress and we
+            # should arm the under-temp alarm. False-positive risk on a
+            # mid-ramp-up restart (grill 110°F, climbing toward setpoint)
+            # is real but rare; missing a real drop is worse.
+            n['grill_reached_once'] = True
             if abs(gr - sp) <= 5:
                 n['grill_at_temp'] = True
             if gr > sp + 25:
                 n['grill_over_temp'] = True
-                n['grill_reached_once'] = True
         # Probe at-temp / over-temp: pre-mark so a restart mid-cook with a
         # probe already past target doesn't re-announce on the next tick.
         ui_targets = state['probe_ui_targets']
