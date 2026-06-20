@@ -13,7 +13,10 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+import subprocess
+
 from bleak import BleakScanner, BleakClient, BleakError
+from bleak.exc import BleakDBusError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request as FastAPIRequest, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -512,9 +515,22 @@ def _mark_disconnected():
             'stalled':   [False, False],
         }
 
+def _reset_bt_adapter(adapter: str | None) -> None:
+    """Reset the BT adapter via hciconfig to clear a stuck BlueZ scan."""
+    hci = adapter or 'hci0'
+    try:
+        subprocess.run(['hciconfig', hci, 'reset'], check=True, timeout=10,
+                       capture_output=True)
+        print(f'Adapter {hci} reset successfully.')
+    except Exception:
+        log.exception(f'Failed to reset adapter {hci}')
+
+
 async def poll_loop(interval: int):
     smoker_was_offline = False
     backoff = BACKOFF_START_SECS
+    consecutive_inprogress = 0
+    INPROGRESS_RESET_THRESHOLD = 3
     await sleep_to_next_tick(interval)
     print(f'Polling aligned — first tick at {time.strftime("%H:%M:%S")}')
     while True:
@@ -523,6 +539,7 @@ async def poll_loop(interval: int):
         success = False
         try:
             dec, ble_device, rssi = await scan_and_read()
+            consecutive_inprogress = 0
 
             if dec:
                 smoker_was_offline = await _process_reading(dec, tick_time, smoker_was_offline, ble_device, rssi)
@@ -538,9 +555,31 @@ async def poll_loop(interval: int):
                     await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
                     smoker_was_offline = True
 
+        except BleakDBusError as exc:
+            if 'InProgress' in str(exc):
+                consecutive_inprogress += 1
+                log.warning('BlueZ scan stuck InProgress (%d/%d)',
+                            consecutive_inprogress, INPROGRESS_RESET_THRESHOLD)
+                if consecutive_inprogress >= INPROGRESS_RESET_THRESHOLD:
+                    log.warning('Resetting BT adapter to clear stuck scan…')
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, _reset_bt_adapter, state.get('adapter'))
+                    consecutive_inprogress = 0
+                    await asyncio.sleep(3)   # give BlueZ a moment to settle
+            else:
+                consecutive_inprogress = 0
+                log.exception('BLE D-Bus error during scan/read')
+            _mark_disconnected()
+            await broadcast({'smoker_offline': True, 'connected': False})
+            if not smoker_was_offline:
+                print('Smoker unreachable — will keep retrying.')
+                add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', time.time())
+                await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
+                smoker_was_offline = True
         except (BleakError, asyncio.TimeoutError):
             # bleak can raise asyncio.TimeoutError (not BleakError) on scan or
             # connect timeouts — treat both as routine "smoker out of range".
+            consecutive_inprogress = 0
             log.exception('BLE error/timeout during scan/read')
             _mark_disconnected()
             await broadcast({'smoker_offline': True, 'connected': False})
@@ -550,6 +589,7 @@ async def poll_loop(interval: int):
                 await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
                 smoker_was_offline = True
         except Exception:
+            consecutive_inprogress = 0
             log.exception('Unexpected error in poll loop')
             _mark_disconnected()
             await broadcast({'smoker_offline': True, 'connected': False})
