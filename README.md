@@ -20,7 +20,7 @@ A local web dashboard for monitoring a Nexgrill Bluetooth smoker in real time. A
 - **Offline detection** — dashboard reflects when the smoker is unreachable; cards hide automatically
 - **Multi-client** — open the dashboard in multiple browsers simultaneously; all receive the same server-computed state
 - **In-app settings** — gear icon (⚙️) opens a settings modal to configure the ntfy.sh topic
-- **Runs as a Docker container or Linux systemd service**
+- **Runs as a Docker container**
 
 ---
 
@@ -112,67 +112,6 @@ The app uses [ntfy.sh](https://ntfy.sh) — a free, open-source push notificatio
 | Grill over temperature | Urgent |
 | Smoker connected | Default |
 | Smoker disconnected | Default |
-
----
-
-## Manual Installation
-
-### 1. Clone and install dependencies
-
-```bash
-git clone https://github.com/bwilliam79/bt-smoker-monitor.git
-cd bt-smoker-monitor
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 2. Run
-
-```bash
-python3 server.py
-```
-
-Then open **http://localhost:8080** in any browser.
-
-The server will scan for the smoker automatically and keep retrying until found.
-
----
-
-## Running as a Linux Service
-
-The included `smoker.service` systemd unit runs the monitor automatically at boot.
-
-**1. Edit `smoker.service`** if your username or path differs:
-
-```ini
-User=your-username
-WorkingDirectory=/home/your-username/bt-smoker-monitor
-ExecStart=/home/your-username/bt-smoker-monitor/venv/bin/python3 server.py --interval 30 --port 8080
-```
-
-**2. Enable and start:**
-
-```bash
-sudo cp smoker.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable smoker
-sudo systemctl start smoker
-```
-
-**3. Access the dashboard** from any device on your network:
-
-```
-http://<your-linux-box-ip>:8080
-```
-
-### Service management
-
-```bash
-sudo systemctl stop smoker      # stop
-sudo systemctl restart smoker   # restart
-journalctl -u smoker -f         # follow logs
-```
 
 ---
 
