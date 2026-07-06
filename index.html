@@ -580,6 +580,10 @@ async function testNtfy() {
 
 // ── Chart ─────────────────────────────────────────────────────────────────────
 const CHART_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+// Chart point spacing is decoupled from the server poll interval so the line
+// doesn't get cluttered with a dot per tick. Dashboard/alarm logic still runs
+// on every tick — only the plotted line is thinned.
+const CHART_POINT_MIN_GAP_MS = 5 * 60 * 1000; // 5 minutes
 const chartLabels     = [];
 const chartTimestamps = [];
 const DS = {
@@ -632,7 +636,9 @@ const chart = new Chart(document.getElementById('tempChart'), {
 });
 
 function pushChartPoint(d, date = new Date(), skipUpdate = false) {
-  chartTimestamps.push(date.getTime());
+  const ts = date.getTime();
+  if (chartTimestamps.length && ts - chartTimestamps[chartTimestamps.length - 1] < CHART_POINT_MIN_GAP_MS) return;
+  chartTimestamps.push(ts);
   chartLabels.push(fmtTime(date));
   DS.grill.push(d.grill);
   DS.grillTarget.push(d.setPoint);
