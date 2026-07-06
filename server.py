@@ -611,7 +611,9 @@ async def poll_loop(interval: int):
 # ── HTTP / WebSocket routes ───────────────────────────────────────────────────
 @app.get('/')
 async def index():
-    return HTMLResponse(Path('index.html').read_text(encoding='utf-8'))
+    html = Path('index.html').read_text(encoding='utf-8')
+    version = Path('VERSION').read_text(encoding='utf-8').strip()
+    return HTMLResponse(html.replace('{{VERSION}}', version))
 
 @app.get('/favicon.svg')
 async def favicon():
