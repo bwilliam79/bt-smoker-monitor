@@ -582,7 +582,10 @@ async function testNtfy() {
 const CHART_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 // Chart point spacing is decoupled from the server poll interval so the line
 // doesn't get cluttered with a dot per tick. Dashboard/alarm logic still runs
-// on every tick — only the plotted line is thinned.
+// on every tick — only the plotted line is thinned. Points are snapped to
+// wall-clock marks (:00, :05, :10, …) rather than "N minutes since the last
+// plotted point" so the line lands on clean marks instead of drifting off
+// them based on when data collection happened to start.
 const CHART_POINT_MIN_GAP_MS = 5 * 60 * 1000; // 5 minutes
 const chartLabels     = [];
 const chartTimestamps = [];
@@ -637,7 +640,11 @@ const chart = new Chart(document.getElementById('tempChart'), {
 
 function pushChartPoint(d, date = new Date(), skipUpdate = false) {
   const ts = date.getTime();
-  if (chartTimestamps.length && ts - chartTimestamps[chartTimestamps.length - 1] < CHART_POINT_MIN_GAP_MS) return;
+  // Poll ticks land on exact multiples of the poll interval (server.py aligns
+  // to wall-clock ticks), so as long as the interval divides CHART_POINT_MIN_GAP_MS
+  // evenly, one tick per bucket lands exactly on the mark — accept only that one.
+  if (ts % CHART_POINT_MIN_GAP_MS !== 0) return;
+  if (chartTimestamps.length && ts <= chartTimestamps[chartTimestamps.length - 1]) return;
   chartTimestamps.push(ts);
   chartLabels.push(fmtTime(date));
   DS.grill.push(d.grill);
