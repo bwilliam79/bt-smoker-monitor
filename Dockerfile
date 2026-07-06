@@ -15,7 +15,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py index.html favicon.svg manifest.json service-worker.js \
+COPY server.py index.html favicon.svg manifest.json service-worker.js VERSION \
      icon-192.png icon-512.png icon-maskable-512.png apple-touch-icon.png ./
 COPY vendor/ ./vendor/
 

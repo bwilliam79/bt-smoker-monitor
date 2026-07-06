@@ -155,6 +155,12 @@ If you have multiple Bluetooth adapters, select the one to use from the in-app s
 
 ---
 
+## Versioning
+
+The app version is stored in `VERSION` (`MAJOR.MINOR.PATCH`) and shown in the footer of the page. Bump patch for bug fixes, minor for enhancements/features, major for breaking changes.
+
+---
+
 ## Dependencies
 
 | Package | Purpose |
