@@ -21,6 +21,7 @@ A local web dashboard for monitoring a Nexgrill Bluetooth smoker in real time. A
 - **Multi-client** — open the dashboard in multiple browsers simultaneously; all receive the same server-computed state
 - **In-app settings** — gear icon (⚙️) opens a settings modal to configure the ntfy.sh topic
 - **Runs as a Docker container**
+- **App icon** — favicon, Apple touch icon, and PWA icons use a head-on photo of the smoker lid (wood handle). Hopper artwork is not used.
 
 ---
 
