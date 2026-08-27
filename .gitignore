@@ -6,3 +6,4 @@ __pycache__/
 .claude/
 .pio/
 firmware/esp32-relay/secrets.h
+firmware/esp32-relay/src/secrets.h
