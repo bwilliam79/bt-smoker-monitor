@@ -335,6 +335,20 @@ def relay_host_is_allowed(raw: str) -> bool:
 
 reading_from_relay_payload = parse_relay_payload
 
+
+def link_transition(prev: str | None, now_up: bool) -> str | None:
+    """Which connection ntfy to send for this poll, or None to stay quiet.
+
+    `prev` is 'unknown' | 'up' | 'down'. Startup is unknown: the first
+    success or failure is not a transition, so an already-unplugged grill
+    does not fire 'Smoker Disconnected' on every process start / deploy.
+    """
+    prev = prev or 'unknown'
+    if now_up:
+        return 'connected' if prev == 'down' else None
+    return 'disconnected' if prev == 'up' else None
+
+
 # ── End pure helpers ──────────────────────────────────────────────────
 
 def _local_ipv4_addrs() -> list[str]:
@@ -522,6 +536,7 @@ clients: dict = {}   # ws -> last_seen_ts
 state    = {
     'last':          None,
     'smoker_online': False,
+    'link':          'unknown',  # 'unknown' | 'up' | 'down' — ntfy edge latch
     'ip':            None,
     'address':       None,   # string address
     'rssi':          None,   # smoker BT (dongle adv or relay bleRssi)
@@ -881,13 +896,13 @@ async def read_from_relay() -> tuple[dict | None, object | None, int | None]:
     print(f'Relay reading  grill={dec["grill"]}°F  set={dec["setPoint"]}°F')
     return dec, None, rssi_i
 
-async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool, ble_device, rssi) -> bool:
-    """Update state and broadcast a successful reading. Returns new smoker_was_offline value."""
-    if smoker_was_offline:
+async def _process_reading(dec: dict, tick_time: float, ble_device, rssi) -> None:
+    """Update state and broadcast a successful reading."""
+    if link_transition(state.get('link'), True) == 'connected':
         print('Smoker reconnected.')
         add_log('SYS', 'Smoker reconnected.', 'tag-sys', tick_time)
         await notify('Smoker Connected', 'Smoker monitor reconnected.', tags='white_check_mark')
-        smoker_was_offline = False
+    state['link'] = 'up'
 
     # Seed `notified` from the first reading after startup. Without this, a
     # container restart mid-cook resets `grill_reached_once` to False, which
@@ -991,7 +1006,6 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
         for i, p in enumerate(dec['probes'])
     )
     log.info(f'Smoker: {dec["grill"]}°F  Set: {dec["setPoint"]}°F  Probes: [{probes_str}]')
-    return smoker_was_offline
 
 def _apply_relay_telemetry(tel: dict | None) -> None:
     """Store ESP /health radios. Never sets smoker_online / connected."""
@@ -1054,6 +1068,21 @@ def _mark_disconnected():
             'stalled':   [False, False],
         }
 
+async def _apply_offline(tick_time: float) -> None:
+    """Mark the smoker down. ntfy only on an up→down edge, not unknown→down."""
+    prev = state.get('link') or 'unknown'
+    event = link_transition(prev, False)
+    _mark_disconnected()
+    await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
+    if event == 'disconnected':
+        print('Smoker not found — will keep retrying.')
+        add_log('WARN', 'Smoker offline — retrying…', 'tag-warn', tick_time)
+        await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
+    elif prev == 'unknown':
+        print('Smoker offline — disconnect alerts armed after the next reconnect.')
+    state['link'] = 'down'
+
+
 def _reset_bt_adapter(adapter: str | None) -> None:
     """Reset the BT adapter via hciconfig to clear a stuck BlueZ scan."""
     hci = adapter or 'hci0'
@@ -1066,7 +1095,6 @@ def _reset_bt_adapter(adapter: str | None) -> None:
 
 
 async def poll_loop(interval: int):
-    smoker_was_offline = False
     backoff = BACKOFF_START_SECS
     consecutive_inprogress = 0
     INPROGRESS_RESET_THRESHOLD = 3
@@ -1084,18 +1112,12 @@ async def poll_loop(interval: int):
             consecutive_inprogress = 0
 
             if dec:
-                smoker_was_offline = await _process_reading(dec, tick_time, smoker_was_offline, ble_device, rssi)
+                await _process_reading(dec, tick_time, ble_device, rssi)
                 success = True
                 backoff = BACKOFF_START_SECS   # reset backoff on any good read
             else:
-                # Scan found nothing
-                _mark_disconnected()
-                await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
-                if not smoker_was_offline:
-                    print('Smoker not found — will keep retrying.')
-                    add_log('WARN', 'Smoker offline — retrying…', 'tag-warn', time.time())
-                    await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
-                    smoker_was_offline = True
+                # Scan found nothing / relay 503 (grill unplugged)
+                await _apply_offline(tick_time)
 
         except BleakDBusError as exc:
             if 'InProgress' in str(exc):
@@ -1111,35 +1133,17 @@ async def poll_loop(interval: int):
             else:
                 consecutive_inprogress = 0
                 log.exception('BLE D-Bus error during scan/read')
-            _mark_disconnected()
-            await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
-            if not smoker_was_offline:
-                print('Smoker unreachable — will keep retrying.')
-                add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', time.time())
-                await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
-                smoker_was_offline = True
+            await _apply_offline(tick_time)
         except (BleakError, asyncio.TimeoutError):
             # bleak can raise asyncio.TimeoutError (not BleakError) on scan or
             # connect timeouts — treat both as routine "smoker out of range".
             consecutive_inprogress = 0
             log.exception('BLE error/timeout during scan/read')
-            _mark_disconnected()
-            await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
-            if not smoker_was_offline:
-                print('Smoker unreachable — will keep retrying.')
-                add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', time.time())
-                await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
-                smoker_was_offline = True
+            await _apply_offline(tick_time)
         except Exception:
             consecutive_inprogress = 0
             log.exception('Unexpected error in poll loop')
-            _mark_disconnected()
-            await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
-            if not smoker_was_offline:
-                print('Smoker unreachable — will keep retrying.')
-                add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', time.time())
-                await notify('Smoker Disconnected', 'Lost connection to smoker. Retrying…', tags='warning')
-                smoker_was_offline = True
+            await _apply_offline(tick_time)
 
         if success:
             # Clock-aligned sleep until the next poll tick
