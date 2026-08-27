@@ -207,3 +207,6 @@ class PublicLogin(unittest.TestCase):
         self.assertIn('save_login', SERVER)
         self.assertIn("Login can only be changed on LAN", SERVER)
         self.assertIn('https://smoker.tehkernel.com', SERVER)
+        self.assertIn("/icon-192.png", SERVER)
+        self.assertIn("/manifest.json", SERVER)
+        self.assertIn("/apple-touch-icon.png", SERVER)
