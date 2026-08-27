@@ -50,7 +50,7 @@ static String sanitizeRelayName(String s) {
   String out;
   for (size_t i = 0; i < s.length() && out.length() < 32; i++) {
     char c = s[i];
-    if (c >= 32 && c < 127 && c != '"' && c != '\\' && c != '\'' && c != '<' && c != '>') {
+    if (c >= 32 && c < 127 && c != '"' && c != '\\' && c != '\'' && c != '<' && c != '>' && c != '&') {
       out += c;
     }
   }
