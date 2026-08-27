@@ -1187,7 +1187,7 @@ async def login_get(request: FastAPIRequest):
     if request.query_params.get('err') == '1':
         msg = '<p>Wrong username or password.</p>'
     elif not (state.get('login_user') and state.get('login_hash')):
-        msg = '<p>Set a username and password on the kitchen LAN first (gear → Public login).</p>'
+        msg = '<p>Set a username and password on LAN :8888 first (gear → Public login).</p>'
     return HTMLResponse(LOGIN_PAGE.replace('__MSG__', msg))
 
 
