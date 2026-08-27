@@ -280,10 +280,17 @@ def parse_relay_telemetry(payload: dict) -> dict | None:
         err = ''.join(c for c in err if 32 <= ord(c) < 127)[:80]
     else:
         err = ''
+    sta = payload.get('sta')
+    sta_s = ''
+    if isinstance(sta, str) and sta.strip() and parse_relay_host(sta.strip()):
+        sta_s = sta.strip()
+    name = sanitize_relay_display_name(payload.get('name'))
     return {
         'wifiRssi': as_rssi(payload.get('wifiRssi')),
         'bleRssi': as_rssi(payload.get('bleRssi')),
         'lastErr': err,
+        'sta': sta_s,
+        'name': name,
     }
 
 
@@ -518,6 +525,8 @@ state    = {
     'wifiRssi':      None,   # ESP STA RSSI; relay mode only
     'bleRssi':       None,   # ESP↔smoker BT RSSI; relay mode only
     'lastErr':       '',     # ESP lastErr; relay mode only
+    'relay_sta':     None,   # ESP STA IP from /health
+    'relay_name':    '',
     'adapter':       None,
     'connection':    CONNECTION_LOCAL,  # 'local' (this server) | 'relay'
     'relay_host':    DEFAULT_RELAY_HOST,
@@ -931,6 +940,12 @@ def _apply_relay_telemetry(tel: dict | None) -> None:
     state['wifiRssi'] = tel.get('wifiRssi')
     state['bleRssi'] = tel.get('bleRssi')
     state['lastErr'] = tel.get('lastErr') or ''
+    if tel.get('sta'):
+        state['relay_sta'] = tel['sta']
+        if not state.get('ip'):
+            state['ip'] = tel['sta']
+    if tel.get('name'):
+        state['relay_name'] = tel['name']
     if state['bleRssi'] is not None:
         state['rssi'] = state['bleRssi']
 
@@ -943,7 +958,12 @@ def _relay_telemetry_msg() -> dict:
         'lastErr': state.get('lastErr') or '',
         'connection': state.get('connection') or CONNECTION_LOCAL,
         'relay_host': state.get('relay_host') or '',
-        'ip': state.get('ip'),
+        'ip': state.get('ip') or state.get('relay_sta'),
+        'interval': state.get('interval'),
+        'adapter': state.get('adapter'),
+        'address': state.get('address'),
+        'relay_name': state.get('relay_name') or '',
+        'relay_sta': state.get('relay_sta'),
     }
 
 
@@ -1147,7 +1167,12 @@ async def api_state():
     last['lastErr'] = state.get('lastErr') or ''
     last['connection'] = state.get('connection') or CONNECTION_LOCAL
     last['relay_host'] = state.get('relay_host') or DEFAULT_RELAY_HOST
-    last['ip'] = state.get('ip')
+    last['ip'] = state.get('ip') or state.get('relay_sta')
+    last['interval'] = state.get('interval')
+    last['adapter'] = state.get('adapter')
+    last['address'] = state.get('address')
+    last['relay_name'] = state.get('relay_name') or ''
+    last['relay_sta'] = state.get('relay_sta')
     return last
 
 @app.get('/api/config')

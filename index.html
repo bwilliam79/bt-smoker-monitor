@@ -104,14 +104,6 @@
     .dot.connecting   { background: #f97316; animation: pulse 0.8s infinite; }
     .dot.disconnected { background: #ef4444; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-    .sig-chip {
-      font-size: 0.72rem; color: #888;
-      border: 1px solid #3d1f0a; border-radius: 6px;
-      padding: 2px 8px; white-space: nowrap;
-    }
-    .sig-chip strong { font-weight: 700; }
-    .sig-err { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; color: #f97316; }
-
     .info-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
     .info-pill {
       background: rgba(20,10,4,0.7); border: 1px solid #3d1f0a;
@@ -378,9 +370,6 @@
   <div class="status-bar">
     <div class="dot connecting" id="statusDot"></div>
     <span id="statusText">Connecting to server…</span>
-    <span class="sig-chip" id="chipBtWrap" style="display:none">BT Signal <strong id="chipBt">—</strong></span>
-    <span class="sig-chip" id="chipWifiWrap" style="display:none">Wi-Fi <strong id="chipWifi">—</strong></span>
-    <span class="sig-chip sig-err" id="chipErrWrap" style="display:none" title=""><span id="chipErr"></span></span>
   </div>
 </div>
 
@@ -441,12 +430,13 @@
   </div>
   <div id="logBody" style="display:none">
     <div style="padding:8px 12px 4px;border-bottom:1px solid #1e1e1e;">
-      <span style="font-size:0.75rem;color:#555;">Smoker IP: <strong id="infoIp" style="color:#93c5fd;">—</strong></span>
-      <span style="font-size:0.75rem;color:#555;margin-left:16px;">BT Address: <strong id="infoBtMac" style="color:#93c5fd;">—</strong></span>
-      <span style="font-size:0.75rem;color:#555;margin-left:16px;"><span id="infoAdapterLabel">Adapter</span>: <strong id="infoAdapter" style="color:#93c5fd;">—</strong></span>
-      <span style="font-size:0.75rem;color:#555;margin-left:16px;">BT Signal: <strong id="infoRssi" style="color:#93c5fd;">—</strong></span>
-      <span style="font-size:0.75rem;color:#555;margin-left:16px;">Wi-Fi: <strong id="infoWifi" style="color:#93c5fd;">—</strong></span>
-      <span style="font-size:0.75rem;color:#555;margin-left:16px;">Poll Interval: <strong id="infoInterval" style="color:#93c5fd;">—</strong></span>
+      <span style="font-size:0.75rem;color:#555;">Smoker IP: <strong id="infoIp" style="color:#93c5fd;">n/a</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;">BT Address: <strong id="infoBtMac" style="color:#93c5fd;">n/a</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;"><span id="infoAdapterLabel">Adapter</span>: <strong id="infoAdapter" style="color:#93c5fd;">n/a</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;">BT Signal: <strong id="infoRssi" style="color:#93c5fd;">n/a</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;">Wi-Fi: <strong id="infoWifi" style="color:#93c5fd;">n/a</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;">Poll Interval: <strong id="infoInterval" style="color:#93c5fd;">n/a</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;">Last err: <strong id="infoLastErr" style="color:#f97316;">none</strong></span>
     </div>
     <div id="log"></div>
   </div>
@@ -872,18 +862,7 @@ function updateDash(d) {
     }
   });
 
-  if (d.ip) document.getElementById('infoIp').textContent = d.ip;
-  if (d.connection === 'relay') {
-    document.getElementById('infoAdapterLabel').textContent = 'Relay';
-    document.getElementById('infoAdapter').textContent = d.relay_host || 'ESP-32';
-    document.getElementById('infoBtMac').textContent = '—';
-  } else {
-    document.getElementById('infoAdapterLabel').textContent = 'Adapter';
-    if (d.adapter) document.getElementById('infoAdapter').textContent = d.adapter;
-    if (d.address) document.getElementById('infoBtMac').textContent = d.address;
-  }
-  if (d.interval) document.getElementById('infoInterval').textContent = `${d.interval}s`;
-  updateSigChips(d);
+  updateLogStrip(d);
 }
 
 function rssiChip(v) {
@@ -892,42 +871,51 @@ function rssiChip(v) {
   const color = v >= -65 ? '#22c55e' : v >= -80 ? '#facc15' : '#ef4444';
   return { label: `${label} (${v} dBm)`, color };
 }
-function setChip(wrapId, elId, chip) {
-  const wrap = document.getElementById(wrapId);
-  const el = document.getElementById(elId);
-  if (!wrap || !el) return;
-  if (!chip) { wrap.style.display = 'none'; return; }
-  wrap.style.display = '';
-  el.textContent = chip.label;
-  el.style.color = chip.color;
+function setInfo(id, text, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  if (color) el.style.color = color;
 }
-function updateSigChips(d) {
+let lastLoggedErr = '';
+function updateLogStrip(d) {
   if (!d) return;
-  const bt = (d.bleRssi != null) ? d.bleRssi : d.rssi;
-  const wifi = d.wifiRssi;
-  const btChip = rssiChip(bt);
-  const wifiChip = rssiChip(wifi);
-  setChip('chipBtWrap', 'chipBt', btChip);
-  setChip('chipWifiWrap', 'chipWifi', wifiChip);
-  const infoBt = document.getElementById('infoRssi');
-  if (infoBt && btChip) { infoBt.textContent = btChip.label; infoBt.style.color = btChip.color; }
-  const infoWifi = document.getElementById('infoWifi');
-  if (infoWifi) {
-    if (wifiChip) { infoWifi.textContent = wifiChip.label; infoWifi.style.color = wifiChip.color; }
-    else { infoWifi.textContent = '—'; }
+  const relay = d.connection === 'relay';
+  const smokerIp = d.ip || d.relay_sta || d.relay_host || '';
+  setInfo('infoIp', smokerIp || (relay ? 'waiting for relay' : 'n/a (no grill IP yet)'));
+
+  if (relay) {
+    setInfo('infoAdapterLabel', 'Relay');
+    const name = (d.relay_name || '').trim();
+    const host = d.relay_host || d.relay_sta || '';
+    setInfo('infoAdapter', name && host ? `${name} (${host})` : (host || name || 'n/a (relay not picked)'));
+    setInfo('infoBtMac', 'n/a (relay; MAC not published)');
+  } else {
+    setInfo('infoAdapterLabel', 'Adapter');
+    setInfo('infoAdapter', d.adapter || 'n/a (default adapter)');
+    setInfo('infoBtMac', d.address || 'n/a (not connected)');
   }
-  const errWrap = document.getElementById('chipErrWrap');
-  const errEl = document.getElementById('chipErr');
+
+  const bt = (d.bleRssi != null) ? d.bleRssi : d.rssi;
+  const btChip = rssiChip(bt);
+  if (btChip) setInfo('infoRssi', btChip.label, btChip.color);
+  else setInfo('infoRssi', relay ? 'n/a (no BT RSSI yet)' : 'n/a (no dongle RSSI yet)', '#93c5fd');
+
+  const wifiChip = rssiChip(d.wifiRssi);
+  if (wifiChip) setInfo('infoWifi', wifiChip.label, wifiChip.color);
+  else setInfo('infoWifi', relay ? 'n/a (no Wi-Fi RSSI yet)' : 'n/a (this server)', '#93c5fd');
+
+  setInfo('infoInterval', d.interval ? `${d.interval}s` : 'n/a (interval unknown)');
+
   const err = (typeof d.lastErr === 'string') ? d.lastErr.trim() : '';
-  if (errWrap && errEl) {
-    if (err) {
-      errWrap.style.display = '';
-      errWrap.title = err;
-      errEl.textContent = err;
-    } else {
-      errWrap.style.display = 'none';
-      errEl.textContent = '';
-    }
+  const errEl = document.getElementById('infoLastErr');
+  if (errEl) {
+    errEl.textContent = err || 'none';
+    errEl.style.color = err ? '#f97316' : '#93c5fd';
+  }
+  if (err && err !== lastLoggedErr) {
+    lastLoggedErr = err;
+    log('WARN', err, 'tag-warn');
   }
 }
 
@@ -1220,7 +1208,7 @@ function connect() {
     setStatus('connecting', 'Waiting for smoker…');
     setDashVisible(false);
     log('SYS', 'WebSocket connected.', 'tag-sys');
-    fetch('/api/state').then(r => r.json()).then(updateSigChips).catch(() => {});
+    fetch('/api/state').then(r => r.json()).then(updateLogStrip).catch(() => {});
   };
 
   ws.onmessage = ({ data }) => {
@@ -1334,7 +1322,7 @@ function connect() {
       }
       setStatus('connecting', 'Smoker unreachable…');
       setDashVisible(false);
-      updateSigChips(d);
+      updateLogStrip(d);
       return;
     }
     if (d.error) {
