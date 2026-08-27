@@ -599,6 +599,12 @@ static void handleHealth() {
   server.send(200, "application/json", buf);
 }
 
+
+static void redirectHome() {
+  server.sendHeader("Location", "/", true);
+  server.send(303, "text/plain", "");
+}
+
 static void sendPage(const char *flash, bool forceIn = false) {
   bool hasPass = devicePass.length() > 0;
   // forceIn: Set-Cookie is on this response; request Cookie is not present yet.
@@ -641,7 +647,7 @@ static void sendPage(const char *flash, bool forceIn = false) {
   if (!hasPass) {
     html += "<h2>Set password</h2><form method=POST action=/setpass>";
     html += "<label>New password</label><input name=newpass type=password maxlength=64 autocomplete=new-password>";
-    html += "<label>Again</label><input name=again type=password maxlength=64 autocomplete=new-password>";
+    html += "<label>Re-enter new password</label><input name=again type=password maxlength=64 autocomplete=new-password>";
     html += "<button type=submit>Set password</button></form>";
   } else if (!in) {
     html += "<h2>Unlock config</h2><form method=POST action=/unlock>";
@@ -657,7 +663,7 @@ static void sendPage(const char *flash, bool forceIn = false) {
     html += "' autocomplete=off>";
     html += "<label>Wi-Fi password</label><input name=pass type=password maxlength=64 autocomplete=new-password>";
     html += "<label>New device password</label><input name=newpass type=password maxlength=64 autocomplete=new-password>";
-    html += "<label>Again</label><input name=again type=password maxlength=64 autocomplete=new-password>";
+    html += "<label>Re-enter new password</label><input name=again type=password maxlength=64 autocomplete=new-password>";
     html += "<div class=row><button type=submit>Save</button></div></form>";
     html += "<form method=POST action=/lock><button type=submit>Lock</button></form>";
     html += "<form id=otaForm><label>OTA firmware</label><input name=firmware type=file accept=.bin>";
@@ -722,7 +728,7 @@ static void handleSetPass() {
     return;
   }
   addSessionCookie();
-  sendPage("Password saved.", true);
+  redirectHome();
 }
 
 static void handleUnlock() {
@@ -736,12 +742,12 @@ static void handleUnlock() {
     return;
   }
   addSessionCookie();
-  sendPage("Unlocked.", true);
+  redirectHome();
 }
 
 static void handleLock() {
   clearSessionCookie();
-  sendPage("Locked.");
+  redirectHome();
 }
 
 static void handleSave() {
