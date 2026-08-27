@@ -127,9 +127,10 @@ class Firmware(unittest.TestCase):
         self.assertNotIn("n/a (relay; MAC not published)", HTML)
         self.assertIn("macWrap.style.display = 'none'", HTML)
 
-    def test_gatt_dump_and_notify_subscribe(self):
+    def test_gatt_dump_and_poll_join(self):
         self.assertIn("/api/gatt", FIRMWARE)
-        self.assertIn("subscribeTempNotify", FIRMWARE)
+        self.assertIn("pollOnce", FIRMWARE)
+        self.assertNotIn("subscribeTempNotify", FIRMWARE)
         self.assertIn("decode_packet", FIRMWARE)
         self.assertIn("len < 20", FIRMWARE)
         self.assertNotIn("55 AA", FIRMWARE)
@@ -171,8 +172,8 @@ class Firmware(unittest.TestCase):
         self.assertIn('sessionOk', save)
         self.assertIn('BT to smoker', FIRMWARE)
         self.assertIn('FW_VERSION', FIRMWARE)
-        self.assertIn('v1.3.1', FIRMWARE)
-        self.assertIn('subscribeTempNotify', FIRMWARE)
+        self.assertIn('v1.4.0', FIRMWARE)
+        self.assertIn('pollOnce', FIRMWARE)
         self.assertNotIn('subscribeAll', FIRMWARE)
         self.assertIn('Connected', FIRMWARE)
         self.assertIn('Waiting for packet', FIRMWARE)
