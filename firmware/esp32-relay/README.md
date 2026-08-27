@@ -27,7 +27,7 @@ Enter that address in Settings → ESP-32 relay → Relay host. This is only rea
 
 Do not UniFi-forward the SoftAP. Do not put house Wi-Fi in git or `platformio.ini`.
 
-The AP PSK in `platformio.ini` is a local device password for the board's own AP, not a cloud credential.
+SoftAP PSK lives in `secrets.h` (gitignored). Copy `secrets.example.h` to `secrets.h` before a local build. Do not commit it. The flashed board already has its PSK in firmware; this change is repo-only until the next flash.
 
 ## Build (do not flash during a live cook)
 

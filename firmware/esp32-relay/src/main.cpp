@@ -4,6 +4,16 @@
 #include <Preferences.h>
 #include <NimBLEDevice.h>
 
+#ifndef RELAY_AP_PASS
+#include "secrets.h"
+#endif
+#ifndef RELAY_AP_PASS
+#error "Copy firmware/esp32-relay/secrets.example.h to secrets.h and set RELAY_AP_PASS. Do not commit secrets.h or house Wi-Fi."
+#endif
+#ifndef RELAY_AP_SSID
+#define RELAY_AP_SSID "smoker-relay"
+#endif
+
 // Nexgrill NXE packet (same offsets as server.py decode_packet).
 static const char *TARGET_PREFIX = "NXE";
 static NimBLEUUID CHAR_TEMP("0000cc01-0000-1000-8000-00805f9b34fb");
