@@ -38,7 +38,7 @@ static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
 static String sessionSid = "";
 static int lastRssi = 0;
-static const char *FW_VERSION = "v1.3.0";
+static const char *FW_VERSION = "v1.3.1";
 static bool haveReading = false;
 static bool scanning = false;
 static bool haveTarget = false;
@@ -305,44 +305,6 @@ static void dumpGattJson(NimBLEClient *client) {
   gattJson = out;
 }
 
-static bool subscribeAll(NimBLEClient *client) {
-  if (!client || !client->isConnected()) {
-    return false;
-  }
-  std::vector<NimBLERemoteService *> *services = client->getServices(false);
-  if (!services) {
-    return false;
-  }
-  unsigned n = 0;
-  for (auto *svc : *services) {
-    if (!svc) {
-      continue;
-    }
-    std::vector<NimBLERemoteCharacteristic *> *chars = svc->getCharacteristics(false);
-    if (!chars) {
-      continue;
-    }
-    for (auto *ch : *chars) {
-      if (!ch) {
-        continue;
-      }
-      bool wantNotify = ch->canNotify();
-      bool wantIndicate = !wantNotify && ch->canIndicate();
-      if (!wantNotify && !wantIndicate) {
-        continue;
-      }
-      if (ch->subscribe(wantNotify, onNotify, false)) {
-        n++;
-        Serial.printf("subscribed %s notify=%d\n", ch->getUUID().toString().c_str(), wantNotify ? 1 : 0);
-      } else {
-        Serial.printf("subscribe failed %s\n", ch->getUUID().toString().c_str());
-      }
-    }
-  }
-  Serial.printf("subscribed count=%u\n", n);
-  return n > 0;
-}
-
 static void tryReadBinary(NimBLEClient *client) {
   if (!client || !client->isConnected()) {
     return;
@@ -421,6 +383,33 @@ static NimBLERemoteCharacteristic *findChar(NimBLEClient *client, const NimBLEUU
   return nullptr;
 }
 
+static bool subscribeTempNotify(NimBLEClient *client) {
+  // CCCD write on 0xcc01 only. Do not subscribe aa01/bb01/etc — those look like
+  // session/controller channels; blasting CCCDs on every notify char is more
+  // write surface than BlueZ (which only READ cc01) and may contribute to NXE
+  // treating join as a new controller. Still a CCCD write on cc01 (required for
+  // notify); no protocol value / setpoint writes.
+  if (!client || !client->isConnected()) {
+    return false;
+  }
+  NimBLERemoteCharacteristic *ch = findChar(client, CHAR_TEMP);
+  if (!ch) {
+    return false;
+  }
+  bool wantNotify = ch->canNotify();
+  bool wantIndicate = !wantNotify && ch->canIndicate();
+  if (!wantNotify && !wantIndicate) {
+    return false;
+  }
+  if (!ch->subscribe(wantNotify, onNotify, false)) {
+    Serial.println("subscribe cc01 failed");
+    return false;
+  }
+  Serial.printf("subscribed cc01 notify=%d\n", wantNotify ? 1 : 0);
+  return true;
+}
+
+
 static bool connectAndSubscribe() {
   if (!haveTarget || otaBusy) {
     return false;
@@ -443,7 +432,8 @@ static bool connectAndSubscribe() {
     return false;
   }
   lastRssi = bleClient->getRssi();
-  dumpGattJson(bleClient);
+  // GATT dump is on-demand via GET /api/gatt (see handleGatt). Mass-reading
+  // every characteristic on join is unnecessary for temps.
   NimBLERemoteCharacteristic *ipCh = findChar(bleClient, CHAR_IP);
   if (ipCh && ipCh->canRead()) {
     std::string ip = ipCh->readValue();
@@ -464,7 +454,7 @@ static bool connectAndSubscribe() {
   if (!haveReading) {
     tryReadBinary(bleClient);
   }
-  if (subscribeAll(bleClient)) {
+  if (subscribeTempNotify(bleClient)) {
     if (!haveReading) {
       setLastErr("subscribed, waiting packet");
     }
@@ -577,6 +567,9 @@ static void handleReading() {
 }
 
 static void handleGatt() {
+  if (bleClient && bleClient->isConnected()) {
+    dumpGattJson(bleClient);
+  }
   server.send(200, "application/json", gattJson);
 }
 
