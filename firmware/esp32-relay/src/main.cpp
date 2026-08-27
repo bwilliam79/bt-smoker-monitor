@@ -39,9 +39,40 @@ static uint32_t lastReadMs = 0;
 static const uint32_t READ_EVERY_MS = 5000;
 static String staSsid = "";
 static String staStatus = "not joined";
+static String relayName = "smoker-relay";
 
 static uint16_t u16le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static String sanitizeRelayName(String s) {
+  s.trim();
+  String out;
+  for (size_t i = 0; i < s.length() && out.length() < 32; i++) {
+    char c = s[i];
+    if (c >= 32 && c < 127 && c != '"' && c != '\\' && c != '\'' && c != '<' && c != '>') {
+      out += c;
+    }
+  }
+  out.trim();
+  if (!out.length()) {
+    return String("smoker-relay");
+  }
+  return out;
+}
+
+static String jsonEscape(const String &s) {
+  String out;
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"' || c == '\\') {
+      out += '\\';
+    }
+    if (c >= 32 && c < 127) {
+      out += c;
+    }
+  }
+  return out;
 }
 
 static void publish(const uint8_t *data, size_t len) {
@@ -150,9 +181,11 @@ static String radioIp() {
 }
 
 static void handleHealth() {
-  char buf[256];
+  String nameEsc = jsonEscape(relayName);
+  char buf[320];
   snprintf(buf, sizeof(buf),
-           "{\"ok\":true,\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\"}",
+           "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\"}",
+           nameEsc.c_str(),
            bleClient && bleClient->isConnected() ? "true" : "false",
            haveReading ? "true" : "false",
            WiFi.softAPIP().toString().c_str(),
@@ -164,9 +197,13 @@ static void sendForm(const char *flash) {
   String html;
   html += "<!doctype html><html><head><meta charset=utf-8>";
   html += "<meta name=viewport content='width=device-width,initial-scale=1'>";
-  html += "<title>smoker-relay</title></head><body>";
-  html += "<h1>smoker-relay</h1>";
-  html += "<p>SoftAP stays up. House Wi-Fi is stored on this board only.</p>";
+  html += "<title>";
+  html += relayName;
+  html += "</title></head><body>";
+  html += "<h1>";
+  html += relayName;
+  html += "</h1>";
+  html += "<p>SoftAP stays up. House Wi-Fi and relay name are stored on this board only.</p>";
   if (flash && flash[0]) {
     html += "<p>";
     html += flash;
@@ -179,11 +216,14 @@ static void sendForm(const char *flash) {
   html += (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "(not joined)";
   html += "</p>";
   html += "<form method=POST action=/wifi>";
+  html += "<p>Relay name<br><input name=name maxlength=32 value='";
+  html += relayName;
+  html += "'></p>";
   html += "<p>House SSID<br><input name=ssid value='";
   html += staSsid;
   html += "'></p>";
   html += "<p>Password<br><input name=pass type=password></p>";
-  html += "<p><button type=submit>Join house Wi-Fi</button></p>";
+  html += "<p><button type=submit>Save / join house Wi-Fi</button></p>";
   html += "</form></body></html>";
   server.send(200, "text/html", html);
 }
@@ -220,22 +260,27 @@ static void trySta(const String &ssid, const String &pass) {
 static void handleWifiPost() {
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
+  String name = sanitizeRelayName(server.arg("name"));
   ssid.trim();
+  prefs.begin("relay", false);
+  prefs.putString("name", name);
+  relayName = name;
   if (!ssid.length()) {
-    sendForm("SSID required.");
+    prefs.end();
+    sendForm("Relay name saved. SSID required to join house Wi-Fi.");
     return;
   }
-  prefs.begin("relay", false);
   prefs.putString("ssid", ssid);
   prefs.putString("pass", pass);
   prefs.end();
   staSsid = ssid;
   trySta(ssid, pass);
-  sendForm(WiFi.status() == WL_CONNECTED ? "Joined house Wi-Fi." : "Saved, but join failed. Recheck the password.");
+  sendForm(WiFi.status() == WL_CONNECTED ? "Saved. Joined house Wi-Fi." : "Saved, but join failed. Recheck the password.");
 }
 
 static void startWifi() {
   prefs.begin("relay", true);
+  relayName = sanitizeRelayName(prefs.getString("name", "smoker-relay"));
   staSsid = prefs.getString("ssid", "");
   String pass = prefs.getString("pass", "");
   prefs.end();

@@ -310,10 +310,20 @@
       <span class="modal-hint">Select which Bluetooth adapter to use for scanning. Change takes effect on the next scan cycle.</span>
     </div>
     <div class="modal-row" id="relayHostRow" style="display:none">
-      <label class="modal-label" for="relayHostInput">Relay host</label>
-      <input id="relayHostInput" class="modal-input" type="text"
-             placeholder="192.168.4.1" autocomplete="off" />
-      <span class="modal-hint">LAN address of the ESP-32.</span>
+      <label class="modal-label" for="relaySelect">Relay</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="relaySelect" class="modal-input" style="flex:1;">
+          <option value="">Scanning LAN…</option>
+        </select>
+        <button type="button" id="relayScanBtn" class="modal-test" style="white-space:nowrap;flex-shrink:0;" onclick="scanRelays()">Scan</button>
+      </div>
+      <span class="modal-hint" id="relayPickHint">Pick a relay on the LAN (name from SoftAP + IP).</span>
+      <div id="relayManualWrap" style="display:none;margin-top:10px;">
+        <label class="modal-label" for="relayHostInput" style="font-size:0.72rem;color:#888;">Or type IP</label>
+        <input id="relayHostInput" class="modal-input" type="text"
+               placeholder="192.168.4.1" autocomplete="off" />
+        <span class="modal-hint">Secondary fallback when discovery finds nothing.</span>
+      </div>
     </div>
     <div class="modal-row">
       <label class="modal-label" for="ntfyInput">ntfy.sh Topic</label>
@@ -544,6 +554,76 @@ function setConnectionChoice(choice) {
   document.getElementById('adapterSelect').disabled = relay;
   document.getElementById('relayHostRow').style.display = relay ? '' : 'none';
   document.getElementById('connHint').textContent = relay ? 'The smoker talks to the ESP-32.' : '';
+  if (relay && document.getElementById('settingsOverlay').classList.contains('open')) {
+    scanRelays();
+  }
+}
+
+function applyRelayDiscovery(relays, currentHost) {
+  const select = document.getElementById('relaySelect');
+  const manual = document.getElementById('relayManualWrap');
+  const hint = document.getElementById('relayPickHint');
+  const input = document.getElementById('relayHostInput');
+  const cur = (currentHost || input.value || '192.168.4.1').trim();
+  select.textContent = '';
+  if (!relays || relays.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No relays found — type IP below';
+    select.appendChild(opt);
+    select.disabled = true;
+    manual.style.display = '';
+    hint.textContent = 'Discovery found nothing on the LAN. Type the board IP below (secondary).';
+    if (!input.value) input.value = cur;
+    return;
+  }
+  select.disabled = false;
+  manual.style.display = 'none';
+  hint.textContent = 'Pick a relay on the LAN (name from SoftAP + IP).';
+  let matched = false;
+  relays.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r.host;
+    opt.textContent = `${r.name} — ${r.host}`;
+    if (r.host === cur) {
+      opt.selected = true;
+      matched = true;
+    }
+    select.appendChild(opt);
+  });
+  if (!matched && cur) {
+    const opt = document.createElement('option');
+    opt.value = cur;
+    opt.textContent = `${cur} (saved)`;
+    opt.selected = true;
+    select.appendChild(opt);
+  }
+  input.value = select.value || cur;
+  select.onchange = () => { input.value = select.value; };
+}
+
+async function scanRelays() {
+  const btn = document.getElementById('relayScanBtn');
+  const select = document.getElementById('relaySelect');
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  select.disabled = true;
+  select.textContent = '';
+  const loading = document.createElement('option');
+  loading.value = '';
+  loading.textContent = 'Scanning LAN…';
+  select.appendChild(loading);
+  try {
+    const res = await fetch('/api/relays');
+    const data = await res.json();
+    applyRelayDiscovery(data.relays || [], data.current || document.getElementById('relayHostInput').value);
+  } catch (e) {
+    applyRelayDiscovery([], document.getElementById('relayHostInput').value);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
 }
 
 async function openSettings() {
@@ -559,6 +639,12 @@ async function openSettings() {
     document.getElementById('ntfyInput').value = cfg.ntfy_topic || '';
     document.getElementById('relayHostInput').value = cfg.relay_host || '192.168.4.1';
     setConnectionChoice(cfg.connection === 'relay' ? 'relay' : 'local');
+    if (cfg.connection === 'relay') {
+      // Fire-and-forget LAN scan so the happy path is pick, not type.
+      scanRelays();
+    } else {
+      applyRelayDiscovery([], cfg.relay_host || '192.168.4.1');
+    }
 
     const select  = document.getElementById('adapterSelect');
     const current = cfg.adapter || '';
@@ -597,7 +683,10 @@ function overlayClick(e) {
 async function saveSettings() {
   const topic   = document.getElementById('ntfyInput').value.trim();
   const adapter = document.getElementById('adapterSelect').value;
-  const host    = document.getElementById('relayHostInput').value.trim();
+  const select  = document.getElementById('relaySelect');
+  const picked  = select && !select.disabled ? (select.value || '').trim() : '';
+  const typed   = document.getElementById('relayHostInput').value.trim();
+  const host    = picked || typed;
   const savedEl = document.getElementById('modalSaved');
   try {
     const res = await fetch('/api/config', {

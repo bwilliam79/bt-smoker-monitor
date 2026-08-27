@@ -9,8 +9,8 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 | Path | Notes |
 |------|--------|
 | `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`). `200` when a packet is cached, `503` while scanning. |
-| `GET /health` | Board status. No Bluetooth addresses. |
-| `GET /` | Phone Wi-Fi form (join house SSID). SoftAP stays up. |
+| `GET /health` | Board status including SoftAP-set `name` and STA IP. No Bluetooth addresses. |
+| `GET /` | Phone form: relay name + house Wi-Fi. SoftAP stays up. Name and credentials persist in NVS (not git). |
 
 The HTTP server binds to the board's own AP/STA address on port 80. It is not a WAN service. The Python app will refuse to poll a non-LAN host.
 
@@ -21,9 +21,9 @@ The HTTP server binds to the board's own AP/STA address on port 80. It is not a 
 - SSID: `smoker-relay`
 - SoftAP address: `192.168.4.1`
 
-Enter that address in Settings → ESP-32 relay → Relay host. This is only reachable from a client associated with the AP.
+Settings → ESP-32 relay discovers boards on the house LAN via `/health` and shows **name — IP**. SoftAP `192.168.4.1` is only reachable from a client associated with the AP.
 
-**House LAN from a phone:** join SoftAP `smoker-relay`, open `http://192.168.4.1/`, enter house SSID and password. Credentials persist in NVS on the board (not git). The form shows the DHCP address when STA joins. Put that address in Settings → ESP-32 relay → Relay host.
+**House LAN from a phone:** join SoftAP `smoker-relay`, open `http://192.168.4.1/`, set a **relay name**, house SSID, and password. Name and credentials persist in NVS on the board (not git). The form shows the DHCP address when STA joins. After STA joins, Settings → ESP-32 relay should list that name and IP — pick it (type IP only if discovery finds nothing). Live boards without the name field still appear as `smoker-relay` + IP until reflashed.
 
 Do not UniFi-forward the SoftAP. Do not put house Wi-Fi in git or `platformio.ini`.
 
