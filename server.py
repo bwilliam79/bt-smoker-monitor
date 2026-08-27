@@ -238,6 +238,12 @@ def discovery_probe_hosts(local_ipv4s: list[str], extra_hosts: list[str] | None 
             continue
         if ip.version != 4 or not ip.is_private:
             continue
+        # Host-net Docker/libvirt bridges are private; expanding those /24s
+        # stalls Settings for tens of seconds. Extras still probe a saved IP.
+        if ip in ipaddress.ip_network('172.16.0.0/12'):
+            continue
+        if ip in ipaddress.ip_network('192.168.122.0/24'):
+            continue
         net = ipaddress.ip_network(f'{ip}/24', strict=False)
         for host_ip in net.hosts():
             add(str(host_ip))
@@ -301,14 +307,6 @@ def _local_ipv4_addrs() -> list[str]:
             found.add(s.getsockname()[0])
         finally:
             s.close()
-    except Exception:
-        pass
-    try:
-        out_h = subprocess.check_output(
-            ['hostname', '-I'], text=True, timeout=1, stderr=subprocess.DEVNULL
-        )
-        for tok in out_h.split():
-            found.add(tok.split('%')[0])
     except Exception:
         pass
     out = []
