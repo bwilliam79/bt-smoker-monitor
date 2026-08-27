@@ -43,6 +43,10 @@ To upload later, when you intend to switch:
 pio run -t upload
 ```
 
+`upload` overwrites firmware only. Do **not** run `pio run -t erase` or esptool erase — house Wi-Fi and relay name live in NVS and should survive a flash. SoftAP redo is only if STA comes up with no LAN IP.
+
+Crash-fix (2026-08-27): do not call `scan->stop()` from the NimBLE advertise callback (LoadProhibited ~6s after STA join). Stop from `loop()` instead. Passive scan + `WiFi.setSleep(false)` for AP_STA coexistence.
+
 ## Packet
 
 Same NXE prefix and `0000cc01-…` characteristic as `server.py`: little-endian u16 setpoint @ 4, grill @ 6, probe targets @ 8/10, probes @ 16/18.

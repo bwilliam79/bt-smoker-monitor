@@ -40,6 +40,7 @@ static const uint32_t READ_EVERY_MS = 5000;
 static String staSsid = "";
 static String staStatus = "not joined";
 static String relayName = "smoker-relay";
+static uint32_t bleReadyMs = 0;
 
 static uint16_t u16le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -76,26 +77,52 @@ static String jsonEscape(const String &s) {
 }
 
 static void publish(const uint8_t *data, size_t len) {
-  if (len < 20) {
+  Serial.printf("pkt len=%u hex=", (unsigned)len);
+  for (size_t i = 0; i < len && i < 24; i++) {
+    Serial.printf("%02x", data[i]);
+  }
+  Serial.println();
+  if (len < 8) {
+    Serial.printf("packet too short len=%u\n", (unsigned)len);
     return;
   }
-  // LAN JSON only — no Bluetooth address field.
+  bool printable = len > 0;
+  for (size_t i = 0; i < len; i++) {
+    uint8_t c = data[i];
+    if (c == 0) {
+      break;
+    }
+    if (c < 32 || c > 126) {
+      printable = false;
+      break;
+    }
+  }
+  if (printable) {
+    Serial.println("skip ascii characteristic (not NXE temps)");
+    return;
+  }
+  uint16_t setPoint = u16le(data + 4);
+  uint16_t grill = u16le(data + 6);
+  uint16_t pt0 = (len >= 10) ? u16le(data + 8) : 0;
+  uint16_t pt1 = (len >= 12) ? u16le(data + 10) : 0;
+  uint16_t p0 = (len >= 18) ? u16le(data + 16) : ((len >= 14) ? u16le(data + 12) : 0);
+  uint16_t p1 = (len >= 20) ? u16le(data + 18) : ((len >= 16) ? u16le(data + 14) : 0);
   char buf[320];
   snprintf(
       buf, sizeof(buf),
       "{\"ok\":true,\"setPoint\":%u,\"grill\":%u,\"probeTargets\":[%u,%u],"
-      "\"probes\":[%u,%u],\"rssi\":%d,\"name\":\"%s\",\"smokerIp\":\"%s\"}",
-      u16le(data + 4), u16le(data + 6), u16le(data + 8), u16le(data + 10),
-      u16le(data + 16), u16le(data + 18), lastRssi, lastName.c_str(),
-      lastIp.c_str());
+      "\"probes\":[%u,%u],\"rssi\":%d,\"name\":\"%s\",\"smokerIp\":\"%s\",\"len\":%u}",
+      setPoint, grill, pt0, pt1, p0, p1, lastRssi, lastName.c_str(), lastIp.c_str(),
+      (unsigned)len);
   lastJson = buf;
   haveReading = true;
-  Serial.printf("reading ok grill=%u set=%u\n", u16le(data + 6), u16le(data + 4));
+  Serial.printf("reading ok grill=%u set=%u len=%u\n", grill, setPoint, (unsigned)len);
 }
 
 class ScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
  public:
   void onResult(NimBLEAdvertisedDevice *adv) override {
+    // Do not stop the scan from this callback — NimBLE 1.4 LoadProhibited on ESP32.
     std::string name = adv->getName();
     if (name.rfind(TARGET_PREFIX, 0) != 0) {
       return;
@@ -104,18 +131,23 @@ class ScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
     lastRssi = adv->getRSSI();
     targetAddr = adv->getAddress();
     haveTarget = true;
-    NimBLEDevice::getScan()->stop();
   }
 };
 
 static ScanCallbacks scanCbs;
 
 static NimBLERemoteCharacteristic *findChar(NimBLEClient *client, const NimBLEUUID &uuid) {
+  if (!client || !client->isConnected()) {
+    return nullptr;
+  }
   std::vector<NimBLERemoteService *> *services = client->getServices(true);
   if (!services) {
     return nullptr;
   }
   for (auto *svc : *services) {
+    if (!svc) {
+      continue;
+    }
     NimBLERemoteCharacteristic *ch = svc->getCharacteristic(uuid);
     if (ch) {
       return ch;
@@ -241,6 +273,7 @@ static void trySta(const String &ssid, const String &pass) {
     return;
   }
   Serial.println("sta join start");
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid.c_str(), pass.c_str());
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
@@ -254,6 +287,11 @@ static void trySta(const String &ssid, const String &pass) {
     staStatus = "join failed";
     Serial.println("sta join failed");
     WiFi.disconnect(false, false);
+    // Fall back to SoftAP so house Wi-Fi can be re-entered without a serial flash.
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(RELAY_AP_SSID, RELAY_AP_PASS);
+    Serial.print("ap ip ");
+    Serial.println(WiFi.softAPIP());
   }
 }
 
@@ -285,12 +323,14 @@ static void startWifi() {
   String pass = prefs.getString("pass", "");
   prefs.end();
 
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(RELAY_AP_SSID, RELAY_AP_PASS);
-  Serial.print("ap ip ");
-  Serial.println(WiFi.softAPIP());
+  // Never run SoftAP+STA with NimBLE on this ESP32 — modem-sleep abort.
   if (staSsid.length()) {
     trySta(staSsid, pass);
+  } else {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(RELAY_AP_SSID, RELAY_AP_PASS);
+    Serial.print("ap ip ");
+    Serial.println(WiFi.softAPIP());
   }
 }
 
@@ -310,17 +350,27 @@ void setup() {
   server.on("/fwlink", HTTP_GET, handleCaptive);
   server.begin();
 
+  // BLE after Wi-Fi is STA-only (or SoftAP-only). Modem sleep stays enabled.
+  delay(1000);
   NimBLEDevice::init("smoker-relay");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   NimBLEScan *scan = NimBLEDevice::getScan();
   scan->setAdvertisedDeviceCallbacks(&scanCbs, false);
-  scan->setActiveScan(true);
-  scan->setInterval(134);
-  scan->setWindow(89);
+  scan->setActiveScan(false);
+  scan->setInterval(160);
+  scan->setWindow(40);
+  Serial.println("ble ready");
 }
 
 void loop() {
   server.handleClient();
+
+  if (bleReadyMs == 0) {
+    bleReadyMs = millis() + 1500;
+  }
+  if (millis() < bleReadyMs) {
+    return;
+  }
 
   if (bleClient && bleClient->isConnected()) {
     if (millis() - lastReadMs >= READ_EVERY_MS) {
@@ -338,6 +388,12 @@ void loop() {
   }
 
   tempChar = nullptr;
+
+  if (haveTarget && scanning) {
+    NimBLEDevice::getScan()->stop();
+    scanning = false;
+    return;
+  }
 
   if (!scanning && !haveTarget) {
     haveReading = false;
