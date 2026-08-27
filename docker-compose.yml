@@ -23,7 +23,7 @@ services:
     # BT_ADAPTER is read by server.py as the default --adapter value. Unset to
     # let BlueZ pick the system default (usually hci0).
     environment:
-      - BT_ADAPTER=${BT_ADAPTER:-hci2}
+      - BT_ADAPTER=${BT_ADAPTER:-}
       # AUTH_TOKEN: if set, /api/* requires header `X-Auth-Token: <value>`.
       # Leave unset for open LAN-only access (a warning is logged on startup).
       - AUTH_TOKEN=${AUTH_TOKEN:-}
