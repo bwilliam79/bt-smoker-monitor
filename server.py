@@ -14,6 +14,8 @@ import ipaddress
 import re
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler, ProxyHandler
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import socket
 
 import subprocess
 
@@ -153,6 +155,95 @@ def relay_reading_url(raw_host: str) -> str | None:
     return f'http://{netloc}/api/reading'
 
 
+def relay_health_url(raw_host: str) -> str | None:
+    parsed = parse_relay_host(raw_host)
+    if not parsed:
+        return None
+    host, port = parsed
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.version == 6:
+            netloc = f'[{host}]:{port}' if port != 80 else f'[{host}]'
+        else:
+            netloc = f'{host}:{port}' if port != 80 else host
+    except ValueError:
+        netloc = f'{host}:{port}' if port != 80 else host
+    return f'http://{netloc}/health'
+
+
+def sanitize_relay_display_name(raw) -> str:
+    """SoftAP-set relay label for UI. No Bluetooth names/addresses."""
+    if not isinstance(raw, str):
+        return 'smoker-relay'
+    cleaned = ''.join(c for c in raw.strip() if 32 <= ord(c) < 127 and c not in '"\'<>\\')
+    cleaned = cleaned.strip()[:32]
+    return cleaned or 'smoker-relay'
+
+
+def parse_relay_health(payload: dict, probed_host: str) -> dict | None:
+    """Map ESP-32 /health JSON to {name, host}. Works with or without name field.
+
+    Live boards before the SoftAP-name flash still expose ok/ap/sta/haveReading;
+    those appear as smoker-relay + IP. No Bluetooth address fields are returned.
+    """
+    if not isinstance(payload, dict) or not payload.get('ok'):
+        return None
+    # Fingerprint the relay health shape (avoid random LAN HTTP services).
+    if not any(k in payload for k in ('haveReading', 'ap', 'sta')):
+        return None
+    # Prefer STA IP when present and LAN; else the probed host.
+    host = None
+    sta = payload.get('sta')
+    if isinstance(sta, str) and sta.strip() and parse_relay_host(sta.strip()):
+        host = normalize_relay_host(sta.strip())
+    if not host:
+        host = normalize_relay_host(probed_host)
+    if not host:
+        return None
+    name = sanitize_relay_display_name(payload.get('name'))
+    return {'name': name, 'host': host}
+
+
+def discovery_probe_hosts(local_ipv4s: list[str], extra_hosts: list[str] | None = None) -> list[str]:
+    """Build unique LAN IPv4 probe list from local /24s plus extras (saved host, etc.)."""
+    hosts: list[str] = []
+    seen: set[str] = set()
+
+    def add(h: str):
+        h = (h or '').strip()
+        if not h or h in seen:
+            return
+        try:
+            ip = ipaddress.ip_address(h)
+        except ValueError:
+            return
+        if ip.version != 4:
+            return
+        if not (ip.is_private or ip.is_loopback or ip.is_link_local):
+            return
+        if ip.is_unspecified or ip.is_multicast:
+            return
+        seen.add(h)
+        hosts.append(h)
+
+    for raw in extra_hosts or []:
+        parsed = parse_relay_host(raw)
+        if parsed:
+            add(parsed[0])
+
+    for addr in local_ipv4s or []:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if ip.version != 4 or not ip.is_private:
+            continue
+        net = ipaddress.ip_network(f'{ip}/24', strict=False)
+        for host_ip in net.hosts():
+            add(str(host_ip))
+    return hosts
+
+
 def parse_relay_payload(payload: dict) -> dict | None:
     """Map ESP-32 /api/reading JSON onto decode_packet's dict. No address field."""
     if not isinstance(payload, dict) or not payload.get('ok'):
@@ -192,6 +283,91 @@ def relay_host_is_allowed(raw: str) -> bool:
 reading_from_relay_payload = parse_relay_payload
 
 # ── End pure helpers ──────────────────────────────────────────────────
+
+def _local_ipv4_addrs() -> list[str]:
+    """Best-effort private IPv4s on this host (for /24 LAN relay scan)."""
+    found: set[str] = set()
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            found.add(info[4][0])
+    except Exception:
+        pass
+    try:
+        # UDP connect does not send packets; reveals the outbound interface IP.
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('192.168.1.1', 80))
+            found.add(s.getsockname()[0])
+        finally:
+            s.close()
+    except Exception:
+        pass
+    out = []
+    for ip in sorted(found):
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if addr.is_private and not addr.is_loopback:
+            out.append(ip)
+    return out
+
+
+def _http_get_json_lan(url: str, timeout: float = 0.45):
+    """GET JSON from a LAN URL. No redirects, no proxy. Returns dict or None."""
+    class _NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    req = Request(url, method='GET')
+    req.add_header('User-Agent', 'bt-smoker-monitor-relay/1.0')
+    req.add_header('Accept', 'application/json')
+    opener = build_opener(ProxyHandler({}), _NoRedirect())
+    with opener.open(req, timeout=timeout) as resp:
+        raw = resp.read(4096)
+    try:
+        data = json.loads(raw.decode())
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def discover_lan_relays(extra_hosts: list[str] | None = None) -> list[dict]:
+    """Probe LAN /24s for ESP-32 /health. Returns [{name, host}, ...] sorted by name.
+
+    Does not log Bluetooth addresses. Name comes from SoftAP-set /health.name when
+    present; otherwise defaults to smoker-relay so pre-flash boards still appear.
+    """
+    probes = discovery_probe_hosts(_local_ipv4_addrs(), extra_hosts)
+    if not probes:
+        return []
+
+    found: dict[str, dict] = {}
+
+    def _probe(ip: str):
+        url = relay_health_url(ip)
+        if not url:
+            return None
+        try:
+            payload = _http_get_json_lan(url)
+        except Exception:
+            return None
+        return parse_relay_health(payload or {}, ip)
+
+    # Bound concurrency so a full /24 finishes in a few seconds on a quiet LAN.
+    with ThreadPoolExecutor(max_workers=64) as pool:
+        futs = {pool.submit(_probe, ip): ip for ip in probes}
+        for fut in as_completed(futs):
+            hit = fut.result()
+            if not hit:
+                continue
+            host = hit['host']
+            prev = found.get(host)
+            if not prev or (prev.get('name') == 'smoker-relay' and hit.get('name') != 'smoker-relay'):
+                found[host] = hit
+
+    return sorted(found.values(), key=lambda r: (r['name'].lower(), r['host']))
+
 
 # ── ETA computation ───────────────────────────────────────────────────────────
 def _linreg_rate(points: list[dict]) -> float | None:
@@ -988,6 +1164,22 @@ def _list_adapters() -> list[dict]:
 @app.get('/api/adapters')
 async def get_adapters():
     return {'adapters': _list_adapters(), 'current': state.get('adapter') or ''}
+
+
+@app.get('/api/relays')
+async def get_relays():
+    """LAN discovery for Settings relay dropdown. Pick name+IP; no Bluetooth fields."""
+    extras = []
+    cur = state.get('relay_host') or ''
+    if cur:
+        extras.append(cur)
+    extras.append(DEFAULT_RELAY_HOST)
+    loop = asyncio.get_event_loop()
+    relays = await loop.run_in_executor(None, discover_lan_relays, extras)
+    return {
+        'relays': relays,
+        'current': state.get('relay_host') or DEFAULT_RELAY_HOST,
+    }
 
 
 def _read_sysfs(path: Path) -> str:
