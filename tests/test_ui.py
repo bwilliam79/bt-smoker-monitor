@@ -99,6 +99,33 @@ class Firmware(unittest.TestCase):
         self.assertIn('Relay name', FIRMWARE)
         self.assertIn('prefs.putString("name"', FIRMWARE)
 
+    def test_sta_wifi_form_not_on_lan(self):
+        self.assertIn('wifi form is SoftAP only', FIRMWARE)
+        self.assertIn('HTTP_POST, handleNamePost', FIRMWARE)
+        self.assertIn('action=/name', FIRMWARE)
+
+    def test_health_and_reading_stay_unauth(self):
+        health = FIRMWARE.split('static void handleHealth', 1)[1].split('static void', 1)[0]
+        reading = FIRMWARE.split('static void handleReading', 1)[1].split('static void', 1)[0]
+        self.assertNotIn('requireAuth', health)
+        self.assertNotIn('requireAuth', reading)
+        self.assertIn('wifiRssi', FIRMWARE)
+        self.assertIn('bleRssi', FIRMWARE)
+        self.assertIn('lastErr', FIRMWARE)
+
+    def test_ota_auth_no_arduino_udp(self):
+        self.assertIn('Update.h', FIRMWARE)
+        self.assertIn('OTA_MAX', FIRMWARE)
+        self.assertIn('pauseBle', FIRMWARE)
+        self.assertIn('X-Relay-Token', FIRMWARE)
+        self.assertIn('headerTokenOk', FIRMWARE)
+        self.assertNotIn('ArduinoOTA', FIRMWARE)
+        self.assertNotIn('3232', FIRMWARE)
+        ota = FIRMWARE.split('static void handleOtaPost', 1)[1].split('static void', 1)[0]
+        self.assertIn('headerTokenOk', ota)
+        name = FIRMWARE.split('static void handleNamePost', 1)[1].split('static void', 1)[0]
+        self.assertIn('requireAuth', name)
+
 
 if __name__ == '__main__':
     unittest.main()
