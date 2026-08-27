@@ -633,7 +633,14 @@ static void sendPage(const char *flash, bool forceIn = false) {
   html += "</style></head><body><div class=w><h1>";
   html += relayName;
   html += "</h1><div class=tel>";
-  html += bleOn ? "<span><span class='dot on'></span>Connected</span>" : "<span><span class=dot></span>Not connected</span>";
+  // Connected = cached NXE packet path, not merely a BLE ACL link.
+  if (haveReading) {
+    html += "<span><span class='dot on'></span>Connected</span>";
+  } else if (bleOn) {
+    html += "<span><span class=dot></span>Waiting for packet</span>";
+  } else {
+    html += "<span><span class=dot></span>Not connected</span>";
+  }
   html += "<span>Wi-Fi ";
   html += (WiFi.status() == WL_CONNECTED) ? (String(wifiRssi) + " dBm") : String("—");
   html += "</span><span>BT to smoker ";
