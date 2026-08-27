@@ -182,6 +182,14 @@ class RelayHealthTests(unittest.TestCase):
         self.assertEqual(hit['host'], '192.168.1.118')
         self.assertEqual(hit['name'], 'smoker-relay')
 
+
+    def test_sanitize_display_name(self):
+        self.assertEqual(H['sanitize_relay_display_name']('patio'), 'patio')
+        self.assertEqual(H['sanitize_relay_display_name']('  '), 'smoker-relay')
+        self.assertEqual(H['sanitize_relay_display_name']('x<script>'), 'xscript')
+        self.assertEqual(H['sanitize_relay_display_name']("a'b&c"), 'abc')
+        self.assertEqual(H['sanitize_relay_display_name'](None), 'smoker-relay')
+
     def test_rejects_random_json(self):
         self.assertIsNone(H['parse_relay_health']({'ok': True, 'status': 'up'}, '192.168.1.1'))
         self.assertIsNone(H['parse_relay_health']({'ok': False, 'name': 'x'}, '192.168.1.1'))
