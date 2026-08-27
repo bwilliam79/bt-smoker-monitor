@@ -10,7 +10,7 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 |------|--------|
 | `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`). `200` when a packet is cached, `503` while scanning. |
 | `GET /health` | Board status. No Bluetooth addresses. |
-| `GET /` | `{"ok":true,"service":"smoker-ble-relay"}` |
+| `GET /` | Phone Wi-Fi form (join house SSID). SoftAP stays up. |
 
 The HTTP server binds to the board's own AP/STA address on port 80. It is not a WAN service. The Python app will refuse to poll a non-LAN host.
 
@@ -23,17 +23,9 @@ The HTTP server binds to the board's own AP/STA address on port 80. It is not a 
 
 Enter that address in Settings → ESP-32 relay → Relay host. This is only reachable from a client associated with the AP.
 
-**From media-server on the house LAN:** rebuild with station credentials as *local* build flags (do not commit them):
+**House LAN from a phone:** join SoftAP `smoker-relay`, open `http://192.168.4.1/`, enter house SSID and password. Credentials persist in NVS on the board (not git). The form shows the DHCP address when STA joins. Put that address in Settings → ESP-32 relay → Relay host.
 
-```ini
-build_flags =
-    -D RELAY_AP_SSID=\"smoker-relay\"
-    -D RELAY_AP_PASS=\"nxe-relay-32\"
-    -D RELAY_STA_SSID=\"your-lan-ssid\"
-    -D RELAY_STA_PASS=\"your-lan-pass\"
-```
-
-Then put the board's DHCP address in the Relay host field.
+Do not UniFi-forward the SoftAP. Do not put house Wi-Fi in git or `platformio.ini`.
 
 The AP PSK in `platformio.ini` is a local device password for the board's own AP, not a cloud credential.
 

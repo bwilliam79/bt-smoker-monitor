@@ -95,7 +95,7 @@ Settings are saved to `/data/config.json` and persist across container restarts.
 
 ### ESP-32 relay
 
-Optional second radio: an ESP-32 near the smoker serves `GET /api/reading` on its LAN address. The dashboard still runs in this same app — there is no second instance. Build notes and the LAN-only API are in [`firmware/esp32-relay/README.md`](firmware/esp32-relay/README.md). Do not flash the board during a live cook; the smoker allows one Bluetooth connection.
+Optional second radio: an ESP-32 near the smoker serves `GET /api/reading` on its LAN address. Join its SoftAP (`smoker-relay`) and set house Wi-Fi at `http://192.168.4.1/` (saved on the board, not in git). The dashboard still runs in this same app — there is no second instance. Build notes and the LAN-only API are in [`firmware/esp32-relay/README.md`](firmware/esp32-relay/README.md). Do not flash the board during a live cook; the smoker allows one Bluetooth connection.
 
 ---
 
