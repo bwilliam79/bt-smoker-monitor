@@ -175,7 +175,7 @@ def sanitize_relay_display_name(raw) -> str:
     """SoftAP-set relay label for UI. No Bluetooth names/addresses."""
     if not isinstance(raw, str):
         return 'smoker-relay'
-    cleaned = ''.join(c for c in raw.strip() if 32 <= ord(c) < 127 and c not in '"\'<>\\')
+    cleaned = ''.join(c for c in raw.strip() if 32 <= ord(c) < 127 and c not in '"\'<>\\&')
     cleaned = cleaned.strip()[:32]
     return cleaned or 'smoker-relay'
 
@@ -301,6 +301,14 @@ def _local_ipv4_addrs() -> list[str]:
             found.add(s.getsockname()[0])
         finally:
             s.close()
+    except Exception:
+        pass
+    try:
+        out_h = subprocess.check_output(
+            ['hostname', '-I'], text=True, timeout=1, stderr=subprocess.DEVNULL
+        )
+        for tok in out_h.split():
+            found.add(tok.split('%')[0])
     except Exception:
         pass
     out = []
@@ -1174,8 +1182,7 @@ async def get_relays():
     if cur:
         extras.append(cur)
     extras.append(DEFAULT_RELAY_HOST)
-    loop = asyncio.get_event_loop()
-    relays = await loop.run_in_executor(None, discover_lan_relays, extras)
+    relays = await asyncio.to_thread(discover_lan_relays, extras)
     return {
         'relays': relays,
         'current': state.get('relay_host') or DEFAULT_RELAY_HOST,
