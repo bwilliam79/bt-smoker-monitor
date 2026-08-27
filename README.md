@@ -90,7 +90,7 @@ Click the **⚙️** icon in the top-right corner to open the settings modal.
 | **Bluetooth Adapter** | Shown for This server. Select which adapter to use. Lists available adapters with their id and friendly name. Change takes effect on the next scan. |
 | **Relay** | Shown for ESP-32 relay. Scans the LAN for boards that answer `GET /health` and lists **name — IP** (name from the SoftAP Wi-Fi form). Pick one — happy path is pick, not type. If discovery finds nothing, a secondary **Or type IP** field appears. Public / WAN hosts are rejected. Live boards without a name field still appear as `smoker-relay` + IP. |
 | **ntfy.sh Topic** | Push notification topic. Leave blank to disable. |
-| **Public login** | Username and password for `https://smoker.tehkernel.com`. Editable on kitchen LAN only (`http://192.168.1.23:8888`). Eight or more characters. Hashed in `/data/config.json`. Never returned by the API. |
+| **Public login** | Gear → **PUBLIC LOGIN** section with real labels above fields (**Username**, **New password**). Hint: “Leave blank to keep the current password.” Credentials for `https://smoker.tehkernel.com`. Editable on kitchen LAN only (`http://192.168.1.23:8888`). Eight or more characters. Hashed in `/data/config.json`. Never returned by the API. |
 
 Settings are saved to `/data/config.json` and persist across container restarts. Missing `connection` means This server, so a live cook keeps using the media-server radio.
 

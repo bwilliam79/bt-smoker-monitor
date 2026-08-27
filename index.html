@@ -9,12 +9,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Smoker">
   <title>Smoker Monitor</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1.3.2">
-  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=1.3.2">
-  <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png?v=1.3.2">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=1.3.2">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=1.3.2">
-  <link rel="manifest" href="/manifest.json?v=1.3.2">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1.3.4">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=1.3.4">
+  <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png?v=1.3.4">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=1.3.4">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=1.3.4">
+  <link rel="manifest" href="/manifest.json?v=1.3.4">
   <script src="/vendor/chart.umd.min.js" integrity="sha384-Sse/HDqcypGpyTDpvZOJNnG0TT3feGQUkF9H+mnRvic+LjR+K1NhTt8f51KIQ3v3" crossorigin="anonymous"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -238,6 +238,7 @@
     }
     .modal-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; }
     .modal-label { font-size: 0.75rem; color: #888; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+    .modal-field-label { font-size: 0.8rem; color: #c4c4c4; font-weight: 500; }
     .modal-input {
       background: #0d0d0d; border: 1px solid #3d1f0a; border-radius: 7px;
       color: #fde68a; padding: 8px 12px; font-size: 0.85rem; outline: none; width: 100%;
@@ -326,9 +327,12 @@
       </div>
     </div>
     <div class="modal-row">
-      <label class="modal-label" for="loginUser">Public login</label>
-      <input id="loginUser" class="modal-input" type="text" autocomplete="username" placeholder="Username" />
-      <input id="loginPass" class="modal-input" type="password" autocomplete="new-password" placeholder="New password (leave blank to keep)" style="margin-top:8px;" />
+      <div class="modal-label" style="margin-bottom:10px;">PUBLIC LOGIN</div>
+      <label class="modal-label" for="loginUser" style="text-transform:none;letter-spacing:0;font-size:0.78rem;color:#d97706;">Username</label>
+      <input id="loginUser" class="modal-input" type="text" autocomplete="username" />
+      <label class="modal-label" for="loginPass" style="text-transform:none;letter-spacing:0;font-size:0.78rem;color:#d97706;margin-top:10px;">New password</label>
+      <input id="loginPass" class="modal-input" type="password" autocomplete="new-password" />
+      <span class="modal-hint">Leave blank to keep the current password.</span>
       <span class="modal-hint">Used on smoker.tehkernel.com only. Set from the kitchen LAN. Eight or more characters. Kitchen :8888 stays open.</span>
     </div>
     <div class="modal-row">
