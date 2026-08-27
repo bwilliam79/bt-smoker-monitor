@@ -101,6 +101,8 @@ class Firmware(unittest.TestCase):
         self.assertIn('action=/setpass', FIRMWARE)
         self.assertIn('action=/unlock', FIRMWARE)
         self.assertIn('sessionOk', FIRMWARE)
+        self.assertIn('sendPage("Unlocked.", true)', FIRMWARE)
+        self.assertIn('forceIn', FIRMWARE)
 
     def test_sta_wifi_form_not_on_lan(self):
         self.assertIn('wifi form is SoftAP only', FIRMWARE)
