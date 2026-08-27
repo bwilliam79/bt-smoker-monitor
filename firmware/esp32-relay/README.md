@@ -8,9 +8,12 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 
 | Path | Notes |
 |------|--------|
-| `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`). `200` when a packet is cached, `503` while scanning. |
-| `GET /health` | Board status including SoftAP-set `name` and STA IP. No Bluetooth addresses. |
-| `GET /` | Phone form: relay name + house Wi-Fi. SoftAP stays up. Name and credentials persist in NVS (not git). |
+| `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`). `200` when a packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
+| `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
+| `GET /` | SoftAP: house Wi-Fi + name + OTA token form. STA (LAN IP): **name only** (auth). House PSK is not accepted on the STA IP. |
+| `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional OTA token to NVS. `404` on STA. |
+| `POST /name` | STA rename. Requires `X-Relay-Token` or form `token` (token lives in NVS, set on SoftAP, not git). |
+| `POST /ota` | HTTP firmware update on LAN STA (SoftAP recovery). Auth required. Pauses BLE. Single-slot + USB recovery. Body cap ~1.5 MB. No ArduinoOTA UDP :3232. |
 
 The HTTP server binds to the board's own AP/STA address on port 80. It is not a WAN service. The Python app will refuse to poll a non-LAN host.
 
@@ -23,9 +26,11 @@ The HTTP server binds to the board's own AP/STA address on port 80. It is not a 
 
 Settings → ESP-32 relay discovers boards on the house LAN via `/health` and shows **name — IP**. SoftAP `192.168.4.1` is only reachable from a client associated with the AP.
 
-**House LAN from a phone:** join SoftAP `smoker-relay`, open `http://192.168.4.1/`, set a **relay name**, house SSID, and password. Name and credentials persist in NVS on the board (not git). The form shows the DHCP address when STA joins. After STA joins, Settings → ESP-32 relay should list that name and IP — pick it (type IP only if discovery finds nothing). Live boards without the name field still appear as `smoker-relay` + IP until reflashed.
+**House LAN from a phone:** join SoftAP `smoker-relay`, open `http://192.168.4.1/`, set a **relay name**, house SSID, password, and OTA token. Those stay in NVS (not git). After STA joins, the LAN IP serves a **name-only** form (`POST /name`, token required). `POST /wifi` is 404 on that IP so the house PSK is not sitting on the STA address. Settings → ESP-32 relay lists name + IP — pick it.
 
-Do not UniFi-forward the SoftAP. Do not put house Wi-Fi in git or `platformio.ini`.
+Do not UniFi-forward the SoftAP, `192.168.1.118`, or port 80. Do not put house Wi-Fi or the OTA token in git or `platformio.ini`.
+
+**OTA:** `curl -H 'X-Relay-Token: <nvs>' -F 'firmware=@firmware.bin' http://<sta-ip>/ota`. Token is minted into NVS on first boot (USB serial prints it once) or set on SoftAP. `GET /health` and `GET /api/reading` stay unauthenticated. Pause BLE during OTA; NVS is not erased. First cut is single-slot; USB `pio run -t upload` is the recovery path.
 
 SoftAP PSK lives in `secrets.h` (gitignored). Copy `secrets.example.h` to `secrets.h` before a local build. Do not commit it. The flashed board already has its PSK in firmware; this change is repo-only until the next flash.
 
@@ -45,7 +50,7 @@ pio run -t upload
 
 `upload` overwrites firmware only. Do **not** run `pio run -t erase` or esptool erase — house Wi-Fi and relay name live in NVS and should survive a flash. SoftAP redo is only if STA comes up with no LAN IP.
 
-Crash-fix (2026-08-27): do not call `scan->stop()` from the NimBLE advertise callback (LoadProhibited ~6s after STA join). Stop from `loop()` instead. Passive scan + `WiFi.setSleep(false)` for AP_STA coexistence.
+Crash-fix (2026-08-27): do not call `scan->stop()` from the NimBLE advertise callback (LoadProhibited). Stop from `loop()` instead. STA-only when NVS has Wi-Fi (AP+STA + NimBLE aborts). Do not call `WiFi.setSleep(false)` with BLE on. Null-adv guard; delay scan until after BLE init. OTA de-inits NimBLE first.
 
 ## Packet
 
