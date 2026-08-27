@@ -38,6 +38,7 @@ static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
 static String sessionSid = "";
 static int lastRssi = 0;
+static const char *FW_VERSION = "v1.3.0";
 static bool haveReading = false;
 static bool scanning = false;
 static bool haveTarget = false;
@@ -630,6 +631,7 @@ static void sendPage(const char *flash, bool forceIn = false) {
   html += "button{background:#3d2e18;color:#e4c48a;border-color:#6b5428;margin-top:14px;font-weight:600}";
   html += ".row{display:flex;gap:10px}.row button{flex:1}";
   html += ".msg{color:#c4a574;margin:0 0 12px}";
+  html += ".fw{margin-top:20px;color:#6b5e4e;font-size:.75rem}";
   html += "</style></head><body><div class=w><h1>";
   html += relayName;
   html += "</h1><div class=tel>";
@@ -677,7 +679,9 @@ static void sendPage(const char *flash, bool forceIn = false) {
     html += "<button type=submit>Upload firmware</button></form>";
     html += "<script>document.getElementById('otaForm').addEventListener('submit',async function(e){e.preventDefault();var f=e.target.firmware.files[0];if(!f){return;}var fd=new FormData();fd.append('firmware',f);var r=await fetch('/ota',{method:'POST',credentials:'same-origin',body:fd});alert(await r.text());if(r.ok){setTimeout(function(){location.reload();},1500);}});</script>";
   }
-  html += "</div></body></html>";
+  html += "<p class=fw>fw ";
+  html += FW_VERSION;
+  html += "</p></div></body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -903,7 +907,8 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("smoker-ble-relay boot");
-  Serial.println("fw notify-subscribe lan-ui ota-soft");
+  Serial.print("fw ");
+  Serial.println(FW_VERSION);
 
   startWifi();
 
