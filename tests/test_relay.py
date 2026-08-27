@@ -154,5 +154,45 @@ class RelayHostTests(unittest.TestCase):
         self.assertIsNone(H['relay_reading_url']('8.8.8.8'))
 
 
+class RelayHealthTests(unittest.TestCase):
+    def test_health_url(self):
+        self.assertEqual(H['relay_health_url']('192.168.1.118'), 'http://192.168.1.118/health')
+        self.assertIsNone(H['relay_health_url']('8.8.8.8'))
+
+    def test_parse_with_name(self):
+        hit = H['parse_relay_health']({
+            'ok': True,
+            'name': 'patio',
+            'ble': False,
+            'haveReading': True,
+            'ap': '192.168.4.1',
+            'sta': '192.168.1.118',
+        }, '192.168.1.118')
+        self.assertEqual(hit, {'name': 'patio', 'host': '192.168.1.118'})
+
+    def test_parse_without_name_still_appears(self):
+        # Live board before SoftAP-name flash.
+        hit = H['parse_relay_health']({
+            'ok': True,
+            'ble': False,
+            'haveReading': False,
+            'ap': '192.168.4.1',
+            'sta': '192.168.1.118',
+        }, '192.168.1.50')
+        self.assertEqual(hit['host'], '192.168.1.118')
+        self.assertEqual(hit['name'], 'smoker-relay')
+
+    def test_rejects_random_json(self):
+        self.assertIsNone(H['parse_relay_health']({'ok': True, 'status': 'up'}, '192.168.1.1'))
+        self.assertIsNone(H['parse_relay_health']({'ok': False, 'name': 'x'}, '192.168.1.1'))
+
+    def test_probe_hosts_from_local_slash24(self):
+        hosts = H['discovery_probe_hosts'](['192.168.1.10'], ['192.168.1.118', '8.8.8.8'])
+        self.assertIn('192.168.1.118', hosts)
+        self.assertIn('192.168.1.1', hosts)
+        self.assertNotIn('8.8.8.8', hosts)
+        self.assertTrue(all(h.startswith('192.168.1.') for h in hosts))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
