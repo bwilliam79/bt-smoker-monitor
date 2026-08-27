@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 .claude/
 .pio/
+firmware/esp32-relay/secrets.h
