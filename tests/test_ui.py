@@ -170,6 +170,8 @@ class Firmware(unittest.TestCase):
         save = FIRMWARE.split('static void handleSave', 1)[1].split('static void', 1)[0]
         self.assertIn('sessionOk', save)
         self.assertIn('BT to smoker', FIRMWARE)
+        self.assertIn('FW_VERSION', FIRMWARE)
+        self.assertIn('v1.3.0', FIRMWARE)
         self.assertIn('Connected', FIRMWARE)
         self.assertIn('Waiting for packet', FIRMWARE)
         self.assertIn('haveReading', FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0])
