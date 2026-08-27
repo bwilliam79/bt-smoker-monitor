@@ -295,7 +295,7 @@
   <div class="modal">
     <h2>Settings</h2>
     <div class="modal-row">
-      <div class="modal-label" id="connLabel">Connection</div>
+      <div class="modal-label" id="connLabel">CONNECTION</div>
       <div class="conn-toggle" role="radiogroup" aria-labelledby="connLabel">
         <button type="button" class="conn-btn selected" id="connLocalBtn" onclick="setConnectionChoice('local')">This server</button>
         <button type="button" class="conn-btn" id="connRelayBtn" onclick="setConnectionChoice('relay')">ESP-32 relay</button>
@@ -313,7 +313,7 @@
       <label class="modal-label" for="relayHostInput">Relay host</label>
       <input id="relayHostInput" class="modal-input" type="text"
              placeholder="192.168.4.1" autocomplete="off" />
-      <span class="modal-hint">LAN address of the ESP-32. Change takes effect on the next poll.</span>
+      <span class="modal-hint">LAN address of the ESP-32.</span>
     </div>
     <div class="modal-row">
       <label class="modal-label" for="ntfyInput">ntfy.sh Topic</label>
@@ -423,7 +423,7 @@
     <div style="padding:8px 12px 4px;border-bottom:1px solid #1e1e1e;">
       <span style="font-size:0.75rem;color:#555;">Smoker IP: <strong id="infoIp" style="color:#93c5fd;">—</strong></span>
       <span style="font-size:0.75rem;color:#555;margin-left:16px;">BT Address: <strong id="infoBtMac" style="color:#93c5fd;">—</strong></span>
-      <span style="font-size:0.75rem;color:#555;margin-left:16px;">Adapter: <strong id="infoAdapter" style="color:#93c5fd;">—</strong></span>
+      <span style="font-size:0.75rem;color:#555;margin-left:16px;"><span id="infoAdapterLabel">Adapter</span>: <strong id="infoAdapter" style="color:#93c5fd;">—</strong></span>
       <span style="font-size:0.75rem;color:#555;margin-left:16px;">Signal: <strong id="infoRssi" style="color:#93c5fd;">—</strong></span>
       <span style="font-size:0.75rem;color:#555;margin-left:16px;">Poll Interval: <strong id="infoInterval" style="color:#93c5fd;">—</strong></span>
     </div>
@@ -537,13 +537,13 @@ let connectionChoice = 'local';
 
 function setConnectionChoice(choice) {
   connectionChoice = (choice === 'relay') ? 'relay' : 'local';
-  document.getElementById('connLocalBtn').classList.toggle('selected', connectionChoice === 'local');
-  document.getElementById('connRelayBtn').classList.toggle('selected', connectionChoice === 'relay');
-  document.getElementById('adapterRow').style.display = connectionChoice === 'local' ? '' : 'none';
-  document.getElementById('relayHostRow').style.display = connectionChoice === 'relay' ? '' : 'none';
-  document.getElementById('connHint').textContent = connectionChoice === 'relay'
-    ? 'Talks to the smoker through an ESP-32 BLE relay on the LAN.'
-    : 'Default. Talks to the smoker from the media-server radio.';
+  const relay = connectionChoice === 'relay';
+  document.getElementById('connLocalBtn').classList.toggle('selected', !relay);
+  document.getElementById('connRelayBtn').classList.toggle('selected', relay);
+  document.getElementById('adapterRow').style.display = relay ? 'none' : '';
+  document.getElementById('adapterSelect').disabled = relay;
+  document.getElementById('relayHostRow').style.display = relay ? '' : 'none';
+  document.getElementById('connHint').textContent = relay ? 'Talks to the smoker through an ESP-32 BLE relay on the LAN.' : 'Default. Talks to the smoker from the media-server radio.';
 }
 
 async function openSettings() {
@@ -772,12 +772,15 @@ function updateDash(d) {
     }
   });
 
-  if (d.ip)       document.getElementById('infoIp').textContent       = d.ip;
-  if (d.address)  document.getElementById('infoBtMac').textContent    = d.address;
+  if (d.ip) document.getElementById('infoIp').textContent = d.ip;
   if (d.connection === 'relay') {
-    document.getElementById('infoAdapter').textContent = 'Relay';
-  } else if (d.adapter && d.adapter !== 'default') {
-    document.getElementById('infoAdapter').textContent = d.adapter;
+    document.getElementById('infoAdapterLabel').textContent = 'Relay';
+    document.getElementById('infoAdapter').textContent = d.relay_host || 'ESP-32';
+    document.getElementById('infoBtMac').textContent = '—';
+  } else {
+    document.getElementById('infoAdapterLabel').textContent = 'Adapter';
+    if (d.adapter) document.getElementById('infoAdapter').textContent = d.adapter;
+    if (d.address) document.getElementById('infoBtMac').textContent = d.address;
   }
   if (d.interval) document.getElementById('infoInterval').textContent = `${d.interval}s`;
   if (d.rssi != null) {
