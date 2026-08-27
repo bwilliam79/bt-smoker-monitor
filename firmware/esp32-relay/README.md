@@ -11,7 +11,7 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 | `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`, `char`). `200` when a 20-byte NXE packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
 | `GET /api/gatt` | Cached service/characteristic dump (`r/w/n/i`, last-read hex). No Bluetooth addresses. Unauthenticated LAN diagnostic. |
 | `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`, `packetChar`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
-| `GET /` | Charcoal LAN page. Telemetry strip is Connected (NXE packet cached), Wi-Fi dBm, and BT to smoker dBm only (no IPs, no pit/set/probes). Footer shows `FW_VERSION` (e.g. fw v1.4.2). Three states: set password, unlock, logged-in config. Session cookie after set/unlock. |
+| `GET /` | Charcoal LAN page. Telemetry strip is Connected (fresh NXE packet; cleared when poll fails), Wi-Fi dBm, and BT to smoker dBm only (no IPs, no pit/set/probes). Footer shows `FW_VERSION` (e.g. fw v1.4.3). Three states: set password, unlock, logged-in config. Session cookie after set/unlock. |
 | `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional device password to NVS. `404` on STA. |
 | `POST /setpass` | First-time password (new+again, 8+). Sets session cookie. |
 | `POST /unlock` | Existing password, one field. Sets session cookie. |
@@ -60,4 +60,4 @@ Crash-fix (2026-08-27): do not call `scan->stop()` from the NimBLE advertise cal
 
 Same decoder as `server.py` `decode_packet`: reject `len < 20`; little-endian u16 setpoint @ 4, grill @ 6, probe targets @ 8/10, probes @ 16/18.
 
-v1.4.2 join matches the media-server BlueZ path: **connect, READ `bb01` + `cc01`, disconnect**. No CCCD subscribe, no persistent session, no setpoint writes. Poll every ~20s on boot and after OTA (soft-pause only during the upload). No Hold/Resume UI. The relay never re-applies set unless we add an explicit opt-in later. GATT dump stays on `GET /api/gatt`, not the poll path. `/api/reading.char` and `/health.packetChar` name the UUID that produced the last valid packet. USB `pio run -t upload` only (do not erase NVS).
+v1.4.3 join matches the media-server BlueZ path: **connect, READ `bb01` + `cc01`, disconnect**. No CCCD subscribe, no persistent session, no setpoint writes. Poll every ~20s on boot and after OTA (soft-pause only during the upload). No Hold/Resume UI. A failed poll clears `haveReading` so `/api/reading` returns **503** (cook UI Connected goes off when the grill is gone). The relay never re-applies set unless we add an explicit opt-in later. GATT dump stays on `GET /api/gatt`, not the poll path. `/api/reading.char` and `/health.packetChar` name the UUID that produced the last valid packet. USB `pio run -t upload` only (do not erase NVS).
