@@ -129,7 +129,7 @@ class Firmware(unittest.TestCase):
 
     def test_gatt_dump_and_notify_subscribe(self):
         self.assertIn("/api/gatt", FIRMWARE)
-        self.assertIn("subscribeAll", FIRMWARE)
+        self.assertIn("subscribeTempNotify", FIRMWARE)
         self.assertIn("decode_packet", FIRMWARE)
         self.assertIn("len < 20", FIRMWARE)
         self.assertNotIn("55 AA", FIRMWARE)
@@ -171,7 +171,9 @@ class Firmware(unittest.TestCase):
         self.assertIn('sessionOk', save)
         self.assertIn('BT to smoker', FIRMWARE)
         self.assertIn('FW_VERSION', FIRMWARE)
-        self.assertIn('v1.3.0', FIRMWARE)
+        self.assertIn('v1.3.1', FIRMWARE)
+        self.assertIn('subscribeTempNotify', FIRMWARE)
+        self.assertNotIn('subscribeAll', FIRMWARE)
         self.assertIn('Connected', FIRMWARE)
         self.assertIn('Waiting for packet', FIRMWARE)
         self.assertIn('haveReading', FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0])
