@@ -139,6 +139,8 @@ The app uses [ntfy.sh](https://ntfy.sh) — a free, open-source push notificatio
 | Smoker connected | Default |
 | Smoker disconnected | Default |
 
+Connect and disconnect alerts are **edge-triggered**. Online→offline fires one ntfy, then stays silent while the grill remains unplugged. Offline→online fires one reconnect ntfy. Process start does **not** send a disconnect just because the grill is already gone (that was spamming ntfy after the v1.4.3 `/api/reading` 503 change on every container restart).
+
 ---
 
 ## Dashboard

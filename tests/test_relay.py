@@ -237,3 +237,21 @@ class RelayTelemetryTests(unittest.TestCase):
         self.assertIsNone(tel['wifiRssi'])
         self.assertIsNone(tel['bleRssi'])
         self.assertEqual(tel['lastErr'], '')
+
+
+class LinkTransitionTests(unittest.TestCase):
+    def test_startup_already_offline_is_silent(self):
+        self.assertIsNone(H['link_transition']('unknown', False))
+        self.assertIsNone(H['link_transition'](None, False))
+
+    def test_startup_already_online_is_silent(self):
+        self.assertIsNone(H['link_transition']('unknown', True))
+
+    def test_up_to_down_notifies_once(self):
+        self.assertEqual(H['link_transition']('up', False), 'disconnected')
+        self.assertIsNone(H['link_transition']('down', False))
+
+    def test_down_to_up_notifies_once(self):
+        self.assertEqual(H['link_transition']('down', True), 'connected')
+        self.assertIsNone(H['link_transition']('up', True))
+
