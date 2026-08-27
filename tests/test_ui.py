@@ -43,7 +43,7 @@ class SettingsModal(unittest.TestCase):
 
     def test_footer_relay_not_fake_hci(self):
         self.assertIn('infoAdapterLabel', HTML)
-        self.assertIn("textContent = 'Relay'", HTML)
+        self.assertIn("setInfo('infoAdapterLabel', 'Relay')", HTML)
 
     def test_relay_discovery_dropdown(self):
         self.assertIn('id="relaySelect"', HTML)
@@ -124,18 +124,21 @@ class Firmware(unittest.TestCase):
         ota = FIRMWARE.split('static void handleOtaPost', 1)[1].split('static void', 1)[0]
         self.assertIn('headerTokenOk', ota)
 
-    def test_cook_ui_relay_telemetry_chips(self):
-        self.assertIn('id="chipBtWrap"', HTML)
-        self.assertIn('id="chipWifiWrap"', HTML)
-        self.assertIn('id="chipErrWrap"', HTML)
-        self.assertIn('BT Signal', HTML)
-        self.assertIn('function updateSigChips', HTML)
+    def test_cook_ui_telemetry_lives_in_log_strip(self):
+        self.assertNotIn('id="chipBtWrap"', HTML)
+        self.assertNotIn('id="chipWifiWrap"', HTML)
+        self.assertNotIn('id="chipErrWrap"', HTML)
+        self.assertIn('id="infoLastErr"', HTML)
+        self.assertIn('function updateLogStrip', HTML)
         self.assertIn("fetch('/api/state')", HTML)
+        self.assertIn('n/a (relay; MAC not published)', HTML)
+        header = HTML.split('<div class="dash">', 1)[0]
+        self.assertNotIn('BT Signal', header)
+        self.assertNotIn('chipWifi', header)
         self.assertIn('parse_relay_telemetry', SERVER)
-        self.assertIn('_apply_relay_telemetry', SERVER)
         self.assertIn("last['wifiRssi']", SERVER)
-        self.assertIn("last['bleRssi']", SERVER)
-        self.assertIn("last['lastErr']", SERVER)
+        self.assertIn("last['relay_sta']", SERVER)
+        self.assertIn("last['interval']", SERVER)
         name = FIRMWARE.split('static void handleNamePost', 1)[1].split('static void', 1)[0]
         self.assertIn('requireAuth', name)
 
