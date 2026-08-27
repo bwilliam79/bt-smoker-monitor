@@ -10,8 +10,10 @@ import math
 import os
 import time
 from pathlib import Path
-from urllib.parse import quote
-from urllib.request import Request, urlopen
+import ipaddress
+import re
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler, ProxyHandler
 
 import subprocess
 
@@ -55,6 +57,7 @@ CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', _default_origi
 log = logging.getLogger('smoker')
 
 # ── Packet decoder ────────────────────────────────────────────────────────────
+# ── Pure helpers (unit-tested) ──────────────────────────────────────
 def read_u16_le(data: bytes, offset: int) -> int:
     return data[offset] | (data[offset + 1] << 8)
 
@@ -67,6 +70,127 @@ def decode_packet(data: bytes):
         'probeTargets': [read_u16_le(data, 8),  read_u16_le(data, 10)],
         'probes':       [read_u16_le(data, 16), read_u16_le(data, 18)],
     }
+
+
+# ── ESP-32 relay (LAN HTTP poller) ────────────────────────────────────────────
+CONNECTION_LOCAL = 'local'
+CONNECTION_RELAY = 'relay'
+DEFAULT_RELAY_HOST = '192.168.4.1'
+_SINGLE_LABEL = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$')
+
+
+def _host_is_lan(host: str) -> bool:
+    """True for private / loopback / link-local IPs, *.local, or a single DNS label."""
+    host = (host or '').strip().strip('[]')
+    if not host:
+        return False
+    lowered = host.lower()
+    if lowered.endswith('.local'):
+        label = lowered[:-6]
+        return bool(label) and bool(_SINGLE_LABEL.match(label))
+    if _SINGLE_LABEL.match(host):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local) and not ip.is_unspecified and not ip.is_multicast
+
+
+def parse_relay_host(raw: str) -> tuple[str, int] | None:
+    """Return (host, port) if *raw* is a LAN-only relay address, else None.
+
+    Accepts '192.168.4.1', '192.168.4.1:80', 'smoker-relay.local', or an
+    accidental http://192.168.4.1 URL. Rejects public IPs and public DNS.
+    """
+    raw = (raw or '').strip()
+    if not raw:
+        return None
+    port = 80
+    if '://' in raw:
+        parsed = urlparse(raw)
+        if parsed.scheme != 'http':
+            return None
+        host = parsed.hostname or ''
+        port = parsed.port or 80
+    elif raw.startswith('['):
+        try:
+            bracket, rest = raw.split(']', 1)
+            host = bracket[1:]
+            if rest.startswith(':'):
+                port = int(rest[1:])
+        except (ValueError, IndexError):
+            return None
+    elif raw.count(':') == 1:
+        host, _, port_s = raw.partition(':')
+        try:
+            port = int(port_s)
+        except ValueError:
+            return None
+    else:
+        host = raw
+    if not host or not (1 <= port <= 65535):
+        return None
+    if not _host_is_lan(host):
+        return None
+    return host, port
+
+
+def relay_reading_url(raw_host: str) -> str | None:
+    parsed = parse_relay_host(raw_host)
+    if not parsed:
+        return None
+    host, port = parsed
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.version == 6:
+            netloc = f'[{host}]:{port}' if port != 80 else f'[{host}]'
+        else:
+            netloc = f'{host}:{port}' if port != 80 else host
+    except ValueError:
+        netloc = f'{host}:{port}' if port != 80 else host
+    return f'http://{netloc}/api/reading'
+
+
+def parse_relay_payload(payload: dict) -> dict | None:
+    """Map ESP-32 /api/reading JSON onto decode_packet's dict. No address field."""
+    if not isinstance(payload, dict) or not payload.get('ok'):
+        return None
+    try:
+        targets = payload['probeTargets']
+        probes = payload['probes']
+        if not (isinstance(targets, list) and isinstance(probes, list)):
+            return None
+        if len(targets) < 2 or len(probes) < 2:
+            return None
+        return {
+            'setPoint':     int(payload['setPoint']),
+            'grill':        int(payload['grill']),
+            'probeTargets': [int(targets[0]), int(targets[1])],
+            'probes':       [int(probes[0]), int(probes[1])],
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def normalize_relay_host(raw: str):
+    """Canonical LAN host[:port], or DEFAULT_RELAY_HOST when blank. None if not LAN."""
+    if not (raw or '').strip():
+        return DEFAULT_RELAY_HOST
+    parsed = parse_relay_host(raw)
+    if not parsed:
+        return None
+    host, port = parsed
+    return host if port == 80 else f'{host}:{port}'
+
+
+def relay_host_is_allowed(raw: str) -> bool:
+    return parse_relay_host(raw) is not None
+
+
+reading_from_relay_payload = parse_relay_payload
+
+# ── End pure helpers ──────────────────────────────────────────────────
 
 # ── ETA computation ───────────────────────────────────────────────────────────
 def _linreg_rate(points: list[dict]) -> float | None:
@@ -164,6 +288,8 @@ state    = {
     'address':       None,   # string address
     'rssi':          None,
     'adapter':       None,
+    'connection':    CONNECTION_LOCAL,  # 'local' (this server) | 'relay'
+    'relay_host':    DEFAULT_RELAY_HOST,
     'history':       [],
     'log_history':   [],
     'interval':      30,
@@ -222,9 +348,13 @@ def load_config() -> dict:
                 log.warning('Config file is not a JSON object; ignoring')
                 return {}
             out = {}
-            for key in ('ntfy_topic', 'adapter'):
+            for key in ('ntfy_topic', 'adapter', 'relay_host'):
                 if key in raw and raw[key] is not None:
                     out[key] = str(raw[key]).strip()
+            if 'connection' in raw and raw['connection'] is not None:
+                conn = str(raw['connection']).strip().lower()
+                if conn in (CONNECTION_LOCAL, CONNECTION_RELAY):
+                    out['connection'] = conn
             if 'probe_targets' in raw and isinstance(raw['probe_targets'], list):
                 out['probe_targets'] = raw['probe_targets']
             return out
@@ -232,8 +362,9 @@ def load_config() -> dict:
         log.exception('Could not read config file')
     return {}
 
-def save_config(ntfy_topic: str, adapter: str = '', probe_targets: list | None = None) -> None:
-    """Persist ntfy_topic, adapter, and probe_targets to CONFIG_PATH.
+def save_config(ntfy_topic: str, adapter: str = '', probe_targets: list | None = None,
+                connection: str | None = None, relay_host: str | None = None) -> None:
+    """Persist settings to CONFIG_PATH.
 
     Read-modify-write so unrelated keys added by future features (or by a
     hand-edit) aren't silently dropped on save.
@@ -255,6 +386,10 @@ def save_config(ntfy_topic: str, adapter: str = '', probe_targets: list | None =
             existing.pop('adapter', None)
         if probe_targets is not None:
             existing['probe_targets'] = probe_targets
+        if connection in (CONNECTION_LOCAL, CONNECTION_RELAY):
+            existing['connection'] = connection
+        if relay_host is not None:
+            existing['relay_host'] = relay_host
         CONFIG_PATH.write_text(json.dumps(existing, indent=2), encoding='utf-8')
     except Exception:
         log.exception('Could not write config file')
@@ -381,7 +516,7 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
 
     found_device, found_adv = found_pair
     found_rssi = found_adv.rssi
-    print(f'Found: {found_device.name}  ({found_device.address})  RSSI: {found_rssi} dBm')
+    print(f'Found: {found_device.name}  RSSI: {found_rssi} dBm')
 
     async with BleakClient(found_device, timeout=45) as client:
         # Always re-read IP on reconnect so we don't serve a stale address forever.
@@ -393,6 +528,44 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
             log.exception('Failed to read smoker IP over GATT; leaving IP as-is')
         raw = await client.read_gatt_char(CHAR_TEMP)
         return decode_packet(bytes(raw)), found_device, found_rssi
+
+async def read_from_relay() -> tuple[dict | None, object | None, int | None]:
+    """Poll the ESP-32 LAN endpoint. Never follows a non-LAN host."""
+    url = relay_reading_url(state.get('relay_host') or DEFAULT_RELAY_HOST)
+    if not url:
+        log.warning('Relay host is not a LAN address; skipping poll')
+        return None, None, None
+
+    def _get():
+        # No redirects and no HTTP(S)_PROXY: a LAN host must not bounce us onto the WAN.
+        class _NoRedirect(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+        req = Request(url, method='GET')
+        req.add_header('User-Agent', 'bt-smoker-monitor-relay/1.0')
+        req.add_header('Accept', 'application/json')
+        opener = build_opener(ProxyHandler({}), _NoRedirect())
+        with opener.open(req, timeout=8) as resp:
+            return json.loads(resp.read().decode())
+
+    try:
+        payload = await asyncio.get_event_loop().run_in_executor(None, _get)
+    except Exception:
+        log.exception('Relay poll failed')
+        return None, None, None
+
+    dec = parse_relay_payload(payload)
+    if not dec:
+        return None, None, None
+
+    smoker_ip = payload.get('smokerIp')
+    if isinstance(smoker_ip, str) and smoker_ip.strip():
+        state['ip'] = smoker_ip.strip()
+
+    rssi = payload.get('rssi')
+    rssi_i = rssi if isinstance(rssi, int) else None
+    print(f'Relay reading  grill={dec["grill"]}°F  set={dec["setPoint"]}°F')
+    return dec, None, rssi_i
 
 async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool, ble_device, rssi) -> bool:
     """Update state and broadcast a successful reading. Returns new smoker_was_offline value."""
@@ -437,7 +610,10 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
                 n['probe_over_temp'][i] = True
         log.info(f'Seeded notification state from first reading: {n}')
 
-    state['address']    = ble_device.address if ble_device else state['address']
+    if ble_device is not None:
+        state['address'] = ble_device.address
+    elif (state.get('connection') or CONNECTION_LOCAL) == CONNECTION_RELAY:
+        state['address'] = None
     if rssi is not None:
         state['rssi'] = rssi
 
@@ -469,7 +645,11 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
 
     dec['ip']              = state['ip']
     dec['address']         = state['address']
-    dec['adapter']         = state.get('adapter') or 'default'
+    dec['connection']      = state.get('connection') or CONNECTION_LOCAL
+    if dec['connection'] == CONNECTION_RELAY:
+        dec['adapter']     = 'Relay'
+    else:
+        dec['adapter']     = state.get('adapter') or 'default'
     dec['rssi']            = state['rssi']
     dec['ts']              = tick_time
     dec['interval']        = state['interval']
@@ -538,7 +718,10 @@ async def poll_loop(interval: int):
 
         success = False
         try:
-            dec, ble_device, rssi = await scan_and_read()
+            if (state.get('connection') or CONNECTION_LOCAL) == CONNECTION_RELAY:
+                dec, ble_device, rssi = await read_from_relay()
+            else:
+                dec, ble_device, rssi = await scan_and_read()
             consecutive_inprogress = 0
 
             if dec:
@@ -684,6 +867,8 @@ async def get_config():
     return {
         'ntfy_topic': state.get('ntfy_topic') or '',
         'adapter': state.get('adapter') or '',
+        'connection': state.get('connection') or CONNECTION_LOCAL,
+        'relay_host': state.get('relay_host') or DEFAULT_RELAY_HOST,
     }
 
 @app.post('/api/config')
@@ -703,13 +888,45 @@ async def post_config(body: dict):
     state['adapter'] = adapter or None
     adapter_changed = adapter != old_adapter
 
-    save_config(effective_topic, adapter, state.get('probe_ui_targets'))
+    submitted_conn = str(body.get('connection', '')).strip().lower()
+    if submitted_conn and submitted_conn not in (CONNECTION_LOCAL, CONNECTION_RELAY):
+        return JSONResponse({'ok': False, 'error': 'Invalid connection'}, status_code=400)
+    old_conn = state.get('connection') or CONNECTION_LOCAL
+    connection = submitted_conn or old_conn
+    connection_changed = connection != old_conn
+    state['connection'] = connection
+
+    submitted_host = str(body.get('relay_host', '')).strip()
+    if submitted_host:
+        if not parse_relay_host(submitted_host):
+            return JSONResponse({'ok': False, 'error': 'Relay host must be a LAN address'}, status_code=400)
+        state['relay_host'] = submitted_host
+    elif not state.get('relay_host'):
+        state['relay_host'] = DEFAULT_RELAY_HOST
+
+    if connection == CONNECTION_RELAY and not parse_relay_host(state.get('relay_host') or ''):
+        return JSONResponse({'ok': False, 'error': 'Relay host must be a LAN address'}, status_code=400)
+
+    save_config(effective_topic, adapter, state.get('probe_ui_targets'),
+                connection=connection, relay_host=state.get('relay_host') or DEFAULT_RELAY_HOST)
     parts = [f'ntfy: {effective_topic or "(none)"}']
     if adapter_changed:
         parts.append(f'adapter: {adapter or "(auto)"}')
         print(f'Bluetooth adapter changed to {adapter or "(auto)"} — takes effect next scan cycle.')
+    if connection_changed:
+        label = 'ESP-32 relay' if connection == CONNECTION_RELAY else 'this server'
+        parts.append(f'connection: {label}')
+        print(f'Connection changed to {label} — takes effect next poll.')
     print(f'Config saved — {", ".join(parts)}')
-    return {'ok': True, 'ntfy_topic': effective_topic, 'adapter': adapter, 'adapter_changed': adapter_changed}
+    return {
+        'ok': True,
+        'ntfy_topic': effective_topic,
+        'adapter': adapter,
+        'adapter_changed': adapter_changed,
+        'connection': connection,
+        'connection_changed': connection_changed,
+        'relay_host': state.get('relay_host') or DEFAULT_RELAY_HOST,
+    }
 
 @app.post('/api/probe-targets')
 async def post_probe_targets(body: dict):
@@ -877,6 +1094,13 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
     elif 'adapter' in cfg and cfg['adapter']:
         state['adapter'] = cfg['adapter']
 
+    # Connection defaults to this server / local radio so a missing key
+    # cannot flip a live cook onto the ESP-32 path.
+    conn = cfg.get('connection') or CONNECTION_LOCAL
+    state['connection'] = conn if conn in (CONNECTION_LOCAL, CONNECTION_RELAY) else CONNECTION_LOCAL
+    host = cfg.get('relay_host') or DEFAULT_RELAY_HOST
+    state['relay_host'] = host if parse_relay_host(host) else DEFAULT_RELAY_HOST
+
     # Restore UI-set probe targets from config
     if 'probe_targets' in cfg and isinstance(cfg['probe_targets'], list):
         for i in range(min(2, len(cfg['probe_targets']))):
@@ -891,9 +1115,13 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
 
     print(f'ntfy topic : {state["ntfy_topic"] or "(disabled)"}')
     print(f'BT adapter : {state["adapter"] or "(system default)"}')
+    if state['connection'] == CONNECTION_RELAY:
+        print(f'Connection : ESP-32 relay ({state["relay_host"]})')
+    else:
+        print('Connection : this server (default)')
     print(f'Probe targets: {state["probe_ui_targets"]}')
     if address:
-        print(f'Using hardcoded address: {address}')
+        print('Using hardcoded BLE address (discovery skipped).')
         state['address'] = address
 
     if AUTH_TOKEN:

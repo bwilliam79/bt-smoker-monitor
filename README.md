@@ -19,7 +19,7 @@ A local web dashboard for monitoring a Nexgrill Bluetooth smoker in real time. A
 - **Smoker at-temperature timer** — shows how long the smoker has held its set temperature
 - **Offline detection** — dashboard reflects when the smoker is unreachable; cards hide automatically
 - **Multi-client** — open the dashboard in multiple browsers simultaneously; all receive the same server-computed state
-- **In-app settings** — gear icon (⚙️) opens a settings modal to configure the ntfy.sh topic
+- **In-app settings** — gear icon (⚙️) opens a settings modal to choose This server vs ESP-32 relay, pick a Bluetooth adapter, and set the ntfy.sh topic
 - **Runs as a Docker container**
 - **App icon** — favicon, Apple touch icon, and PWA icons use a head-on photo of the smoker lid (wood handle). Hopper artwork is not used.
 
@@ -86,10 +86,16 @@ Click the **⚙️** icon in the top-right corner to open the settings modal.
 
 | Setting | Description |
 |---------|-------------|
-| **Bluetooth Adapter** | Select which Bluetooth adapter to use. Lists all available adapters with their friendly name, bus type, MAC address, and status. Change takes effect on the next scan cycle — no restart required. |
+| **Connection** | **This server** (default) talks to the smoker from the media-server radio. **ESP-32 relay** hides the adapter dropdown; the smoker talks to the ESP-32 instead. Save commits the whole modal. The switch takes effect on the next poll. |
+| **Bluetooth Adapter** | Shown for This server. Select which adapter to use. Lists available adapters with their id and friendly name. Change takes effect on the next scan. |
+| **Relay host** | Shown for ESP-32 relay. LAN address of the board (default `192.168.4.1`). Public / WAN hosts are rejected. |
 | **ntfy.sh Topic** | Push notification topic. Leave blank to disable. |
 
-Settings are saved to `/data/config.json` and persist across container restarts.
+Settings are saved to `/data/config.json` and persist across container restarts. Missing `connection` means This server, so a live cook keeps using the media-server radio.
+
+### ESP-32 relay
+
+Optional second radio: an ESP-32 near the smoker serves `GET /api/reading` on its LAN address. The dashboard still runs in this same app — there is no second instance. Build notes and the LAN-only API are in [`esp32-relay/README.md`](esp32-relay/README.md). Do not flash the board during a live cook; the smoker allows one Bluetooth connection.
 
 ---
 
@@ -152,7 +158,7 @@ The app uses [ntfy.sh](https://ntfy.sh) — a free, open-source push notificatio
 
 The smoker only supports **one BLE connection at a time**. Close the official Nexgrill app before using this monitor, otherwise connections will fail.
 
-If you have multiple Bluetooth adapters, select the one to use from the in-app settings (⚙️). The dropdown lists each adapter with its friendly name, bus type, and MAC address. You can also set the initial adapter at startup with `--adapter hciX`.
+If you have multiple Bluetooth adapters, select the one to use from the in-app settings (⚙️) while Connection is This server. You can also set the initial adapter at startup with `--adapter hciX`.
 
 ---
 

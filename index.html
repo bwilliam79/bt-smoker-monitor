@@ -228,8 +228,8 @@
     }
     .modal-overlay.open { display: flex; }
     .modal {
-      background: #111; border: 1px solid #3d1f0a; border-radius: 14px;
-      padding: 24px 28px; width: min(420px, 92vw);
+      background: #161616; border: 1px solid #f97316; border-radius: 14px;
+      padding: 24px 28px; width: min(460px, 92vw);
       box-shadow: 0 0 40px rgba(249,115,22,0.15);
     }
     .modal h2 {
@@ -256,10 +256,33 @@
     .modal-save:hover { background: #991b1b; }
     .modal-cancel {
       background: transparent; border: 1px solid #333; border-radius: 7px;
-      color: #888; padding: 7px 16px; font-size: 0.82rem; cursor: pointer;
+      color: #f97316; padding: 7px 16px; font-size: 0.82rem; cursor: pointer;
     }
-    .modal-cancel:hover { border-color: #555; color: #aaa; }
+    .modal-cancel:hover { border-color: #555; color: #fdba74; }
+    .modal-test {
+      background: transparent; border: 1px solid #f97316; border-radius: 7px;
+      color: #f97316; padding: 7px 16px; font-size: 0.82rem; cursor: pointer;
+      font-weight: 600;
+    }
+    .modal-test:hover { background: rgba(249,115,22,0.12); }
     .modal-saved { font-size: 0.75rem; color: #22c55e; align-self: center; display: none; }
+    .conn-toggle { display: flex; gap: 8px; }
+    .conn-btn {
+      flex: 1;
+      background: transparent;
+      border: 1px solid #3a3a3a;
+      border-radius: 8px;
+      color: #9ca3af;
+      padding: 16px 8px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .conn-btn.selected { border-color: #f97316; color: #f97316; }
+    .conn-btn:hover { border-color: #f97316; }
+    select.modal-input { border-color: #f97316; }
   </style>
 </head>
 <body>
@@ -270,22 +293,34 @@
 <!-- Settings modal -->
 <div class="modal-overlay" id="settingsOverlay" onclick="overlayClick(event)">
   <div class="modal">
-    <h2>⚙️ Settings</h2>
+    <h2>Settings</h2>
     <div class="modal-row">
+      <div class="modal-label" id="connLabel">Connection</div>
+      <div class="conn-toggle" role="radiogroup" aria-labelledby="connLabel">
+        <button type="button" class="conn-btn selected" id="connLocalBtn" onclick="setConnectionChoice('local')">This server</button>
+        <button type="button" class="conn-btn" id="connRelayBtn" onclick="setConnectionChoice('relay')">ESP-32 relay</button>
+      </div>
+      <span class="modal-hint" id="connHint">Default. Talks to the smoker from the media-server radio.</span>
+    </div>
+    <div class="modal-row" id="adapterRow">
       <label class="modal-label" for="adapterSelect">Bluetooth Adapter</label>
       <select id="adapterSelect" class="modal-input">
         <option value="">Loading adapters…</option>
       </select>
-      <span class="modal-hint">
-        Select which Bluetooth adapter to use for scanning. Change takes effect on the next scan cycle.
-      </span>
+      <span class="modal-hint">Change takes effect on the next scan.</span>
+    </div>
+    <div class="modal-row" id="relayHostRow" style="display:none">
+      <label class="modal-label" for="relayHostInput">Relay host</label>
+      <input id="relayHostInput" class="modal-input" type="text"
+             placeholder="192.168.4.1" autocomplete="off" />
+      <span class="modal-hint">LAN address of the ESP-32. Change takes effect on the next poll.</span>
     </div>
     <div class="modal-row">
-      <label class="modal-label" for="ntfyInput">ntfy.sh Push Notification Topic</label>
+      <label class="modal-label" for="ntfyInput">ntfy.sh Topic</label>
       <div style="display:flex;gap:8px;align-items:center;">
         <input id="ntfyInput" class="modal-input" type="text"
-               placeholder="e.g. bwwilliams-smoker-monitor" autocomplete="off" />
-        <button id="ntfyTestBtn" class="modal-cancel" style="white-space:nowrap;flex-shrink:0;" onclick="testNtfy()">Test</button>
+               placeholder="e.g. my-smoker-topic" autocomplete="off" />
+        <button id="ntfyTestBtn" class="modal-test" style="white-space:nowrap;flex-shrink:0;" onclick="testNtfy()">Test</button>
       </div>
       <span id="ntfyTestStatus" class="modal-hint" style="display:none;"></span>
       <span class="modal-hint">
@@ -498,7 +533,22 @@ async function clearChart() {
 }
 
 // ── Settings modal ────────────────────────────────────────────────────────────
+let connectionChoice = 'local';
+
+function setConnectionChoice(choice) {
+  connectionChoice = (choice === 'relay') ? 'relay' : 'local';
+  document.getElementById('connLocalBtn').classList.toggle('selected', connectionChoice === 'local');
+  document.getElementById('connRelayBtn').classList.toggle('selected', connectionChoice === 'relay');
+  document.getElementById('adapterRow').style.display = connectionChoice === 'local' ? '' : 'none';
+  document.getElementById('relayHostRow').style.display = connectionChoice === 'relay' ? '' : 'none';
+  document.getElementById('connHint').textContent = connectionChoice === 'relay'
+    ? 'Talks to the smoker through an ESP-32 BLE relay on the LAN.'
+    : 'Default. Talks to the smoker from the media-server radio.';
+}
+
 async function openSettings() {
+  // Default This server so first open never forces a pick.
+  setConnectionChoice('local');
   try {
     const [cfgRes, adapterRes] = await Promise.all([
       fetch('/api/config'),
@@ -507,6 +557,8 @@ async function openSettings() {
     const cfg      = await cfgRes.json();
     const adapters = await adapterRes.json();
     document.getElementById('ntfyInput').value = cfg.ntfy_topic || '';
+    document.getElementById('relayHostInput').value = cfg.relay_host || '192.168.4.1';
+    setConnectionChoice(cfg.connection === 'relay' ? 'relay' : 'local');
 
     const select  = document.getElementById('adapterSelect');
     const current = cfg.adapter || '';
@@ -545,12 +597,18 @@ function overlayClick(e) {
 async function saveSettings() {
   const topic   = document.getElementById('ntfyInput').value.trim();
   const adapter = document.getElementById('adapterSelect').value;
+  const host    = document.getElementById('relayHostInput').value.trim();
   const savedEl = document.getElementById('modalSaved');
   try {
     const res = await fetch('/api/config', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ ntfy_topic: topic, adapter: adapter }),
+      body:    JSON.stringify({
+        ntfy_topic: topic,
+        adapter: adapter,
+        connection: connectionChoice,
+        relay_host: host,
+      }),
     });
     if (!res.ok) throw new Error(await res.text());
     const result = await res.json();
@@ -558,6 +616,9 @@ async function saveSettings() {
     savedEl.style.display = 'inline';
     const parts = [`ntfy: ${topic || '(none)'}`];
     if (result.adapter_changed) parts.push(`adapter: ${adapter || '(auto)'}`);
+    if (result.connection_changed) {
+      parts.push(connectionChoice === 'relay' ? 'connection: ESP-32 relay' : 'connection: this server');
+    }
     log('SYS', `Settings saved — ${parts.join(', ')}.`, 'tag-sys');
     setTimeout(closeSettings, 1200);
   } catch (e) {
@@ -713,7 +774,11 @@ function updateDash(d) {
 
   if (d.ip)       document.getElementById('infoIp').textContent       = d.ip;
   if (d.address)  document.getElementById('infoBtMac').textContent    = d.address;
-  if (d.adapter)  document.getElementById('infoAdapter').textContent  = d.adapter;
+  if (d.connection === 'relay') {
+    document.getElementById('infoAdapter').textContent = 'Relay';
+  } else if (d.adapter && d.adapter !== 'default') {
+    document.getElementById('infoAdapter').textContent = d.adapter;
+  }
   if (d.interval) document.getElementById('infoInterval').textContent = `${d.interval}s`;
   if (d.rssi != null) {
     const el    = document.getElementById('infoRssi');
