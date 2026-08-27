@@ -558,7 +558,17 @@ state    = {
 }
 
 # ── Public-host session wall (LAN :8888 stays open) ──────────────────────────
-_PUBLIC_OPEN = {('/login', 'GET'), ('/login', 'POST'), ('/favicon.svg', 'GET')}
+_PUBLIC_OPEN = {
+    ('/login', 'GET'),
+    ('/login', 'POST'),
+    ('/favicon.svg', 'GET'),
+    ('/manifest.json', 'GET'),
+    ('/icon-192.png', 'GET'),
+    ('/icon-512.png', 'GET'),
+    ('/icon-maskable-512.png', 'GET'),
+    ('/apple-touch-icon.png', 'GET'),
+    ('/service-worker.js', 'GET'),
+}
 
 
 def _is_https(request: FastAPIRequest) -> bool:
@@ -1146,6 +1156,10 @@ LOGIN_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f97316">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
 <title>Smoker Monitor — Sign in</title>
 <style>
   body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
