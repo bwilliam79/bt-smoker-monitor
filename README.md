@@ -90,8 +90,22 @@ Click the **⚙️** icon in the top-right corner to open the settings modal.
 | **Bluetooth Adapter** | Shown for This server. Select which adapter to use. Lists available adapters with their id and friendly name. Change takes effect on the next scan. |
 | **Relay** | Shown for ESP-32 relay. Scans the LAN for boards that answer `GET /health` and lists **name — IP** (name from the SoftAP Wi-Fi form). Pick one — happy path is pick, not type. If discovery finds nothing, a secondary **Or type IP** field appears. Public / WAN hosts are rejected. Live boards without a name field still appear as `smoker-relay` + IP. |
 | **ntfy.sh Topic** | Push notification topic. Leave blank to disable. |
+| **Public login** | Username and password for `https://smoker.tehkernel.com`. Editable on kitchen LAN only (`http://192.168.1.23:8888`). Eight or more characters. Hashed in `/data/config.json`. Never returned by the API. |
 
 Settings are saved to `/data/config.json` and persist across container restarts. Missing `connection` means This server, so a live cook keeps using the media-server radio.
+
+
+### Public HTTPS (`smoker.tehkernel.com`)
+
+Kitchen LAN `http://192.168.1.23:8888` stays open (no login). The public host always requires an in-app browser session:
+
+- Unauthenticated `GET /api/*` and `WS /ws` on Host `smoker.tehkernel.com` return **401**.
+- `GET /login` is a form that POSTs to `/login` on that same origin. A successful login sets an HttpOnly `sid` cookie (`Secure` on HTTPS, `SameSite=Lax`).
+- With no password configured yet, public APIs still 401 (fail closed). Set credentials from the LAN gear modal first.
+- Changing username/password on the public host is **403**, even with a session.
+- Caddy only reverse-proxies TLS; there is no Caddy basicauth. The ESP-32 relay (`192.168.1.118`) is not on this door.
+
+`CORS_ORIGINS` includes `https://smoker.tehkernel.com`. `AUTH_TOKEN` is unused for this wall.
 
 ### ESP-32 relay
 

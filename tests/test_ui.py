@@ -189,3 +189,19 @@ class Firmware(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PublicLogin(unittest.TestCase):
+    def test_settings_fields(self):
+        self.assertIn('id="loginUser"', HTML)
+        self.assertIn('id="loginPass"', HTML)
+        self.assertIn('login_password', HTML)
+        self.assertIn('smoker.tehkernel.com', HTML)
+
+    def test_server_wall(self):
+        self.assertIn("host_is_public", SERVER)
+        self.assertIn("@app.get('/login')", SERVER)
+        self.assertIn("@app.post('/login')", SERVER)
+        self.assertIn('save_login', SERVER)
+        self.assertIn("Login can only be changed on LAN", SERVER)
+        self.assertIn('https://smoker.tehkernel.com', SERVER)

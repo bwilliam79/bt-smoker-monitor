@@ -325,6 +325,12 @@
       </div>
     </div>
     <div class="modal-row">
+      <label class="modal-label" for="loginUser">Public login</label>
+      <input id="loginUser" class="modal-input" type="text" autocomplete="username" placeholder="Username" />
+      <input id="loginPass" class="modal-input" type="password" autocomplete="new-password" placeholder="New password (leave blank to keep)" style="margin-top:8px;" />
+      <span class="modal-hint">Used on smoker.tehkernel.com only. Set from the kitchen LAN. Eight or more characters. Kitchen :8888 stays open.</span>
+    </div>
+    <div class="modal-row">
       <label class="modal-label" for="ntfyInput">ntfy.sh Topic</label>
       <div style="display:flex;gap:8px;align-items:center;">
         <input id="ntfyInput" class="modal-input" type="text"
@@ -638,6 +644,8 @@ async function openSettings() {
     const cfg      = await cfgRes.json();
     const adapters = await adapterRes.json();
     document.getElementById('ntfyInput').value = cfg.ntfy_topic || '';
+    document.getElementById('loginUser').value = cfg.login_user || '';
+    document.getElementById('loginPass').value = '';
     document.getElementById('relayHostInput').value = cfg.relay_host || '192.168.4.1';
     setConnectionChoice(cfg.connection === 'relay' ? 'relay' : 'local');
     if (cfg.connection === 'relay') {
@@ -698,6 +706,8 @@ async function saveSettings() {
         adapter: adapter,
         connection: connectionChoice,
         relay_host: host,
+        login_user: document.getElementById('loginUser').value.trim(),
+        login_password: document.getElementById('loginPass').value,
       }),
     });
     if (!res.ok) throw new Error(await res.text());

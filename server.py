@@ -10,6 +10,7 @@ import math
 import os
 import time
 from pathlib import Path
+import hmac
 import ipaddress
 import re
 from urllib.parse import quote, urlparse
@@ -22,10 +23,12 @@ import subprocess
 
 from bleak import BleakScanner, BleakClient, BleakError
 from bleak.exc import BleakDBusError
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request as FastAPIRequest, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request as FastAPIRequest, Response, Form
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+
+import session_auth
 
 # ── BLE UUIDs ────────────────────────────────────────────────────────────────
 CHAR_IP   = '0000bb01-0000-1000-8000-00805f9b34fb'
@@ -54,7 +57,7 @@ WS_REAPER_INTERVAL   = 30    # how often to sweep stale clients
 AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '').strip() or None
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
-_default_origins = 'http://localhost:8080,http://127.0.0.1:8080,http://localhost:8888,http://127.0.0.1:8888'
+_default_origins = 'http://localhost:8080,http://127.0.0.1:8080,http://localhost:8888,http://127.0.0.1:8888,https://smoker.tehkernel.com'
 CORS_ORIGINS = [o.strip() for o in os.environ.get('CORS_ORIGINS', _default_origins).split(',') if o.strip()]
 
 log = logging.getLogger('smoker')
@@ -534,6 +537,9 @@ state    = {
     'log_history':   [],
     'interval':      30,
     'ntfy_topic':    None,
+    'login_user':    '',
+    'login_salt':    '',
+    'login_hash':    '',
     # per-probe ETA state (reset when probe disconnects)
     'probe_history':    [[], []],    # [{temp, ts}, …] since probe first detected
     'probe_eta':        [None, None],  # minutes to target, or None
@@ -551,10 +557,30 @@ state    = {
     },
 }
 
-# ── Auth middleware for /api/* routes ────────────────────────────────────────
+# ── Public-host session wall (LAN :8888 stays open) ──────────────────────────
+_PUBLIC_OPEN = {('/login', 'GET'), ('/login', 'POST'), ('/favicon.svg', 'GET')}
+
+
+def _is_https(request: FastAPIRequest) -> bool:
+    proto = (request.headers.get('x-forwarded-proto') or request.url.scheme or '').split(',')[0].strip().lower()
+    return proto == 'https'
+
+
 @app.middleware('http')
 async def auth_middleware(request: FastAPIRequest, call_next):
-    if AUTH_TOKEN and request.url.path.startswith('/api/'):
+    path = request.url.path
+    method = request.method.upper()
+    if session_auth.host_is_public(request.headers.get('host')):
+        if (path, method) not in _PUBLIC_OPEN and not session_auth.session_ok(request.headers.get('cookie')):
+            if path.startswith('/api/') or path == '/ws':
+                return JSONResponse({'error': 'Unauthorized'}, status_code=401)
+            if method == 'GET' and path == '/':
+                return RedirectResponse('/login', status_code=302)
+            return JSONResponse({'error': 'Unauthorized'}, status_code=401)
+        if path in ('/api/config', '/api/login') and method == 'POST':
+            # Credential writes are LAN-only even with a public session.
+            pass
+    if AUTH_TOKEN and path.startswith('/api/'):
         if request.headers.get('X-Auth-Token') != AUTH_TOKEN:
             return JSONResponse({'error': 'Unauthorized'}, status_code=401)
     return await call_next(request)
@@ -588,7 +614,7 @@ def load_config() -> dict:
                 log.warning('Config file is not a JSON object; ignoring')
                 return {}
             out = {}
-            for key in ('ntfy_topic', 'adapter', 'relay_host'):
+            for key in ('ntfy_topic', 'adapter', 'relay_host', 'login_user', 'login_salt', 'login_hash'):
                 if key in raw and raw[key] is not None:
                     out[key] = str(raw[key]).strip()
             if 'connection' in raw and raw['connection'] is not None:
@@ -633,6 +659,30 @@ def save_config(ntfy_topic: str, adapter: str = '', probe_targets: list | None =
         CONFIG_PATH.write_text(json.dumps(existing, indent=2), encoding='utf-8')
     except Exception:
         log.exception('Could not write config file')
+
+
+def save_login(username: str, password: str) -> None:
+    """Persist hashed public-login credentials. Call on LAN only."""
+    salt, hashed = session_auth.hash_password(password)
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        existing = {}
+        if CONFIG_PATH.exists():
+            try:
+                raw = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
+                if isinstance(raw, dict):
+                    existing = raw
+            except Exception:
+                log.exception('Could not read existing config; will overwrite login keys')
+        existing['login_user'] = username
+        existing['login_salt'] = salt
+        existing['login_hash'] = hashed
+        CONFIG_PATH.write_text(json.dumps(existing, indent=2), encoding='utf-8')
+        state['login_user'] = username
+        state['login_salt'] = salt
+        state['login_hash'] = hashed
+    except Exception:
+        log.exception('Could not write login config')
 
 # ── Server-side log history ───────────────────────────────────────────────────
 def add_log(tag: str, msg: str, cls: str, ts: float):
@@ -1091,11 +1141,77 @@ async def poll_loop(interval: int):
             backoff = min(backoff * 2, BACKOFF_MAX_SECS)
 
 # ── HTTP / WebSocket routes ───────────────────────────────────────────────────
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smoker Monitor — Sign in</title>
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#140c08; color:#f5e6d3; font-family:system-ui,sans-serif; }
+  form { width:min(22rem,92vw); background:#1f140e; border:1px solid #3d2a1d; border-radius:12px; padding:1.5rem; }
+  h1 { margin:0 0 1rem; font-size:1.15rem; color:#f97316; }
+  label { display:block; font-size:.75rem; letter-spacing:.04em; color:#c4a484; margin:.7rem 0 .25rem; }
+  input { width:100%; box-sizing:border-box; padding:.55rem .7rem; border-radius:8px; border:1px solid #5a3c28;
+          background:#140c08; color:#f5e6d3; }
+  button { margin-top:1.1rem; width:100%; padding:.7rem; border:0; border-radius:8px; background:#f97316; color:#1a0e08; font-weight:600; cursor:pointer; }
+  p { color:#c4a484; font-size:.85rem; }
+</style>
+</head>
+<body>
+<form method="POST" action="/login">
+  <h1>Smoker Monitor</h1>
+  __MSG__
+  <label for="username">Username</label>
+  <input id="username" name="username" type="text" autocomplete="username" required>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <button type="submit">Sign in</button>
+</form>
+</body>
+</html>
+"""
+
+
 @app.get('/')
 async def index():
     html = Path('index.html').read_text(encoding='utf-8')
     version = Path('VERSION').read_text(encoding='utf-8').strip()
     return HTMLResponse(html.replace('{{VERSION}}', version))
+
+
+@app.get('/login')
+async def login_get(request: FastAPIRequest):
+    msg = ''
+    if request.query_params.get('err') == '1':
+        msg = '<p>Wrong username or password.</p>'
+    elif not (state.get('login_user') and state.get('login_hash')):
+        msg = '<p>Set a username and password on the kitchen LAN first (gear → Public login).</p>'
+    return HTMLResponse(LOGIN_PAGE.replace('__MSG__', msg))
+
+
+@app.post('/login')
+async def login_post(request: FastAPIRequest, username: str = Form(''), password: str = Form('')):
+    stored_user = state.get('login_user') or ''
+    salt = state.get('login_salt') or ''
+    hashed = state.get('login_hash') or ''
+    user_ok = hmac.compare_digest(username.strip(), stored_user) if stored_user else False
+    pass_ok = session_auth.verify_password(password, salt, hashed) if salt and hashed else False
+    if not (user_ok and pass_ok):
+        return RedirectResponse('/login?err=1', status_code=303)
+    sid = session_auth.mint_session()
+    resp = RedirectResponse('/', status_code=303)
+    resp.headers['Set-Cookie'] = session_auth.cookie_header(sid, secure=_is_https(request))
+    return resp
+
+
+@app.post('/logout')
+async def logout(request: FastAPIRequest):
+    session_auth.drop_session(request.headers.get('cookie'))
+    resp = RedirectResponse('/login', status_code=303)
+    resp.headers['Set-Cookie'] = session_auth.clear_cookie_header(_is_https(request))
+    return resp
 
 @app.get('/favicon.svg')
 async def favicon():
@@ -1180,13 +1296,24 @@ async def get_config():
         'adapter': state.get('adapter') or '',
         'connection': state.get('connection') or CONNECTION_LOCAL,
         'relay_host': state.get('relay_host') or DEFAULT_RELAY_HOST,
+        'login_user': state.get('login_user') or '',
+        'login_configured': bool(state.get('login_hash')),
     }
 
 @app.post('/api/config')
-async def post_config(body: dict):
+async def post_config(request: FastAPIRequest, body: dict):
     # Empty/missing ntfy_topic is ignored (preserves existing value). Prevents a
     # save that only meant to update adapter from silently wiping the topic and
     # leaving notify() as a no-op until the user notices alarms aren't firing.
+    login_user = str(body.get('login_user', '')).strip()
+    login_password = str(body.get('login_password', '') or body.get('password', '') or '')
+    # Password present = credential write. Username-only saves (gear keep-blank) must not 400.
+    if login_password:
+        if session_auth.host_is_public(request.headers.get('host')):
+            return JSONResponse({'ok': False, 'error': 'Login can only be changed on LAN'}, status_code=403)
+        if not login_user or len(login_password) < 8:
+            return JSONResponse({'ok': False, 'error': 'Username and 8+ character password required'}, status_code=400)
+        save_login(login_user, login_password)
     submitted_topic = str(body.get('ntfy_topic', '')).strip()
     if submitted_topic:
         state['ntfy_topic'] = submitted_topic
@@ -1372,6 +1499,9 @@ async def clear_history():
 
 @app.websocket('/ws')
 async def websocket_endpoint(ws: WebSocket):
+    if session_auth.host_is_public(ws.headers.get('host')) and not session_auth.session_ok(ws.headers.get('cookie')):
+        await ws.close(code=4401)
+        return
     await ws.accept()
     clients[ws] = time.time()
     log.info(f'Client connected  ({len(clients)} total)')
@@ -1423,6 +1553,9 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
     cfg = load_config()
     if 'ntfy_topic' in cfg:
         state['ntfy_topic'] = cfg['ntfy_topic'] or None
+    state['login_user'] = cfg.get('login_user') or ''
+    state['login_salt'] = cfg.get('login_salt') or ''
+    state['login_hash'] = cfg.get('login_hash') or ''
 
     # CLI --adapter wins, then config file, then None (system default)
     if adapter:
@@ -1468,7 +1601,7 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
 
     print(f'Starting web server on http://0.0.0.0:{port}')
 
-    server_cfg = uvicorn.Config(app, host='0.0.0.0', port=port, log_level='warning')
+    server_cfg = uvicorn.Config(session_auth.PublicWsGate(app), host='0.0.0.0', port=port, log_level='warning')
     server     = uvicorn.Server(server_cfg)
 
     await asyncio.gather(

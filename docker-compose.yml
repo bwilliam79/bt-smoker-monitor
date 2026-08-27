@@ -28,7 +28,7 @@ services:
       # Leave unset for open LAN-only access (a warning is logged on startup).
       - AUTH_TOKEN=${AUTH_TOKEN:-}
       # CORS_ORIGINS: comma-separated list of allowed Origin headers.
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8888,http://127.0.0.1:8888}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8888,http://127.0.0.1:8888,https://smoker.tehkernel.com}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8888/api/state', timeout=5)"]
       interval: 60s
