@@ -38,8 +38,9 @@ static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
 static String sessionSid = "";
 static int lastRssi = 0;
-static const char *FW_VERSION = "v1.3.1";
+static const char *FW_VERSION = "v1.4.0";
 static bool haveReading = false;
+static bool holdBle = false;
 static bool scanning = false;
 static bool haveTarget = false;
 static bool otaBusy = false;
@@ -51,7 +52,8 @@ static NimBLEAddress targetAddr;
 static NimBLEClient *bleClient = nullptr;
 static NimBLERemoteCharacteristic *tempChar = nullptr;
 static uint32_t lastReadMs = 0;
-static const uint32_t READ_EVERY_MS = 15000;
+static uint32_t lastPollMs = 0;
+static const uint32_t POLL_EVERY_MS = 20000;
 static String staSsid = "";
 static String staStatus = "not joined";
 static String relayName = "smoker-relay";
@@ -150,6 +152,25 @@ static void pollSerial() {
 }
 
 static void setLastErr(const char *s) { lastErr = s; }
+
+static void persistHold(bool v) {
+  holdBle = v;
+  prefs.begin("relay", false);
+  prefs.putBool("holdBle", v);
+  prefs.end();
+  if (v) {
+    scanning = false;
+    haveTarget = false;
+    if (bleClient && bleClient->isConnected()) {
+      bleClient->disconnect();
+    }
+    if (bleInited) {
+      NimBLEDevice::getScan()->stop();
+    }
+  } else {
+    lastPollMs = 0;
+  }
+}
 
 static bool looksAscii(const uint8_t *data, size_t len) {
   if (!len) {
@@ -383,35 +404,11 @@ static NimBLERemoteCharacteristic *findChar(NimBLEClient *client, const NimBLEUU
   return nullptr;
 }
 
-static bool subscribeTempNotify(NimBLEClient *client) {
-  // CCCD write on 0xcc01 only. Do not subscribe aa01/bb01/etc — those look like
-  // session/controller channels; blasting CCCDs on every notify char is more
-  // write surface than BlueZ (which only READ cc01) and may contribute to NXE
-  // treating join as a new controller. Still a CCCD write on cc01 (required for
-  // notify); no protocol value / setpoint writes.
-  if (!client || !client->isConnected()) {
-    return false;
-  }
-  NimBLERemoteCharacteristic *ch = findChar(client, CHAR_TEMP);
-  if (!ch) {
-    return false;
-  }
-  bool wantNotify = ch->canNotify();
-  bool wantIndicate = !wantNotify && ch->canIndicate();
-  if (!wantNotify && !wantIndicate) {
-    return false;
-  }
-  if (!ch->subscribe(wantNotify, onNotify, false)) {
-    Serial.println("subscribe cc01 failed");
-    return false;
-  }
-  Serial.printf("subscribed cc01 notify=%d\n", wantNotify ? 1 : 0);
-  return true;
-}
-
-
-static bool connectAndSubscribe() {
-  if (!haveTarget || otaBusy) {
+static bool pollOnce() {
+  // BlueZ-style: connect, READ bb01 + cc01, disconnect. No CCCD, no persist.
+  // NXE treats a subscribed staying-central as the controller; dropping it
+  // puts the grill into shutdown. Never write setpoints.
+  if (!haveTarget || otaBusy || holdBle) {
     return false;
   }
   if (!bleClient) {
@@ -432,8 +429,6 @@ static bool connectAndSubscribe() {
     return false;
   }
   lastRssi = bleClient->getRssi();
-  // GATT dump is on-demand via GET /api/gatt (see handleGatt). Mass-reading
-  // every characteristic on join is unnecessary for temps.
   NimBLERemoteCharacteristic *ipCh = findChar(bleClient, CHAR_IP);
   if (ipCh && ipCh->canRead()) {
     std::string ip = ipCh->readValue();
@@ -446,23 +441,20 @@ static bool connectAndSubscribe() {
     lastIp = cleaned;
   }
   tempChar = findChar(bleClient, CHAR_TEMP);
+  bool ok = false;
   if (tempChar && tempChar->canRead()) {
     std::string raw = tempChar->readValue();
     std::string cu = tempChar->getUUID().toString();
     publish(reinterpret_cast<const uint8_t *>(raw.data()), raw.size(), cu.c_str());
+    ok = haveReading;
   }
   if (!haveReading) {
-    tryReadBinary(bleClient);
+    setLastErr("poll read missed packet");
   }
-  if (subscribeTempNotify(bleClient)) {
-    if (!haveReading) {
-      setLastErr("subscribed, waiting packet");
-    }
-  } else if (!haveReading) {
-    setLastErr("no notify characteristic");
-    Serial.println("no notify characteristic");
-  }
-  return true;
+  bleClient->disconnect();
+  delay(50);
+  Serial.printf("poll done ok=%d\n", ok ? 1 : 0);
+  return ok;
 }
 
 static void onScanDone(NimBLEScanResults) { scanning = false; }
@@ -582,11 +574,12 @@ static void handleHealth() {
   char buf[520];
   int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   snprintf(buf, sizeof(buf),
-           "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
+           "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"bleHeld\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
            "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\",\"packetChar\":\"%s\"}",
            nameEsc.c_str(),
            bleClient && bleClient->isConnected() ? "true" : "false",
            haveReading ? "true" : "false",
+           holdBle ? "true" : "false",
            ap.c_str(),
            sta.c_str(),
            wifiRssi, lastRssi, errEsc.c_str(), charEsc.c_str());
@@ -629,7 +622,9 @@ static void sendPage(const char *flash, bool forceIn = false) {
   html += relayName;
   html += "</h1><div class=tel>";
   // Connected = cached NXE packet path, not merely a BLE ACL link.
-  if (haveReading) {
+  if (holdBle) {
+    html += "<span><span class=dot></span>BLE held</span>";
+  } else if (haveReading) {
     html += "<span><span class='dot on'></span>Connected</span>";
   } else if (bleOn) {
     html += "<span><span class=dot></span>Waiting for packet</span>";
@@ -639,7 +634,7 @@ static void sendPage(const char *flash, bool forceIn = false) {
   html += "<span>Wi-Fi ";
   html += (WiFi.status() == WL_CONNECTED) ? (String(wifiRssi) + " dBm") : String("—");
   html += "</span><span>BT to smoker ";
-  html += bleOn ? (String(lastRssi) + " dBm") : String("—");
+  html += lastRssi ? (String(lastRssi) + " dBm") : String("—");
   html += "</span></div>";
   if (flash && flash[0]) {
     html += "<p class=msg>";
@@ -667,6 +662,11 @@ static void sendPage(const char *flash, bool forceIn = false) {
     html += "<label>New device password</label><input name=newpass type=password maxlength=64 autocomplete=new-password>";
     html += "<label>Re-enter new password</label><input name=again type=password maxlength=64 autocomplete=new-password>";
     html += "<div class=row><button type=submit>Save</button></div></form>";
+    if (holdBle) {
+      html += "<form method=POST action=/ble/resume><button type=submit>Resume BLE</button></form>";
+    } else {
+      html += "<form method=POST action=/ble/hold><button type=submit>Hold BLE</button></form>";
+    }
     html += "<form method=POST action=/lock><button type=submit>Lock</button></form>";
     html += "<form id=otaForm><label>OTA firmware</label><input name=firmware type=file accept=.bin>";
     html += "<button type=submit>Upload firmware</button></form>";
@@ -751,6 +751,24 @@ static void handleUnlock() {
 
 static void handleLock() {
   clearSessionCookie();
+  redirectHome();
+}
+
+static void handleBleResume() {
+  if (!sessionOk() && !headerTokenOk()) {
+    sendPage("Unlock first.");
+    return;
+  }
+  persistHold(false);
+  redirectHome();
+}
+
+static void handleBleHold() {
+  if (!sessionOk() && !headerTokenOk()) {
+    sendPage("Unlock first.");
+    return;
+  }
+  persistHold(true);
   redirectHome();
 }
 
@@ -868,6 +886,9 @@ static void handleOtaPost() {
     return;
   }
   server.send(200, "application/json", "{\"ok\":true}");
+  prefs.begin("relay", false);
+  prefs.putBool("holdBle", true);
+  prefs.end();
   delay(200);
   ESP.restart();
 }
@@ -878,6 +899,13 @@ static void startWifi() {
   staSsid = prefs.getString("ssid", "");
   String pass = prefs.getString("pass", "");
   devicePass = prefs.getString("pw", "");
+  holdBle = prefs.getBool("holdBle", false);
+  String seen = prefs.getString("fwSeen", "");
+  if (seen != String(FW_VERSION)) {
+    holdBle = true;
+    prefs.putBool("holdBle", true);
+    prefs.putString("fwSeen", FW_VERSION);
+  }
   prefs.remove("tok");
   if (!devicePass.length()) {
     Serial.println("no password set. LAN form or serial: pass <password>");
@@ -915,6 +943,8 @@ void setup() {
   server.on("/wifi", HTTP_POST, handleWifiPost);
   server.on("/name", HTTP_POST, handleNamePost);
   server.on("/ota", HTTP_POST, handleOtaPost, handleOtaUpload);
+  server.on("/ble/resume", HTTP_POST, handleBleResume);
+  server.on("/ble/hold", HTTP_POST, handleBleHold);
   server.on("/api/reading", HTTP_GET, handleReading);
   server.on("/api/gatt", HTTP_GET, handleGatt);
   server.on("/health", HTTP_GET, handleHealth);
@@ -946,48 +976,36 @@ void loop() {
     return;
   }
 
-  if (notifyPending) {
-    notifyPending = false;
-    const char *uuid = "";
-    std::string cu;
-    if (notifySrc) {
-      cu = notifySrc->getUUID().toString();
-      uuid = cu.c_str();
-    }
-    publish(notifyBuf, notifyLen, uuid);
-  }
-
-  if (bleClient && bleClient->isConnected()) {
-    if (!haveReading && millis() - lastReadMs >= READ_EVERY_MS) {
-      lastReadMs = millis();
-      lastRssi = bleClient->getRssi();
-      tryReadBinary(bleClient);
+  if (holdBle) {
+    if (bleClient && bleClient->isConnected()) {
+      bleClient->disconnect();
     }
     return;
   }
 
-  tempChar = nullptr;
-  notifySrc = nullptr;
+  // Never remain the NXE controller. Disconnect leftovers, then poll.
+  if (bleClient && bleClient->isConnected()) {
+    bleClient->disconnect();
+    delay(50);
+  }
 
-  if (haveTarget && scanning) {
+  if (!haveTarget) {
+    if (!scanning) {
+      scanning = true;
+      NimBLEDevice::getScan()->start(8, onScanDone, false);
+    }
+    return;
+  }
+  if (scanning) {
     NimBLEDevice::getScan()->stop();
     scanning = false;
     return;
   }
-
-  if (!scanning && !haveTarget) {
-    haveReading = false;
-    lastJson = "{\"ok\":false}";
-    scanning = true;
-    NimBLEDevice::getScan()->start(8, onScanDone, false);
+  if (lastPollMs != 0 && millis() - lastPollMs < POLL_EVERY_MS) {
     return;
   }
-
-  if (haveTarget && !(bleClient && bleClient->isConnected())) {
-    if (connectAndSubscribe()) {
-      lastReadMs = millis();
-    } else {
-      haveTarget = false;
-    }
+  lastPollMs = millis();
+  if (!pollOnce()) {
+    haveTarget = false;
   }
 }
