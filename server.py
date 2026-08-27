@@ -14,6 +14,7 @@ import ipaddress
 import re
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler, ProxyHandler
+from urllib.error import HTTPError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import socket
 
@@ -260,6 +261,32 @@ def discovery_probe_hosts(local_ipv4s: list[str], extra_hosts: list[str] | None 
     return hosts
 
 
+def parse_relay_telemetry(payload: dict) -> dict | None:
+    """Map ESP-32 /health JSON to wifiRssi/bleRssi/lastErr. None if not a relay."""
+    if not isinstance(payload, dict) or not payload.get('ok'):
+        return None
+    if not any(k in payload for k in ('haveReading', 'ap', 'sta', 'wifiRssi', 'bleRssi')):
+        return None
+
+    def as_rssi(v):
+        if isinstance(v, bool) or not isinstance(v, int):
+            return None
+        if v > 0 or v < -120:
+            return None
+        return v
+
+    err = payload.get('lastErr')
+    if isinstance(err, str):
+        err = ''.join(c for c in err if 32 <= ord(c) < 127)[:80]
+    else:
+        err = ''
+    return {
+        'wifiRssi': as_rssi(payload.get('wifiRssi')),
+        'bleRssi': as_rssi(payload.get('bleRssi')),
+        'lastErr': err,
+    }
+
+
 def parse_relay_payload(payload: dict) -> dict | None:
     """Map ESP-32 /api/reading JSON onto decode_packet's dict. No address field."""
     if not isinstance(payload, dict) or not payload.get('ok'):
@@ -487,7 +514,10 @@ state    = {
     'smoker_online': False,
     'ip':            None,
     'address':       None,   # string address
-    'rssi':          None,
+    'rssi':          None,   # smoker BT (dongle adv or relay bleRssi)
+    'wifiRssi':      None,   # ESP STA RSSI; relay mode only
+    'bleRssi':       None,   # ESP↔smoker BT RSSI; relay mode only
+    'lastErr':       '',     # ESP lastErr; relay mode only
     'adapter':       None,
     'connection':    CONNECTION_LOCAL,  # 'local' (this server) | 'relay'
     'relay_host':    DEFAULT_RELAY_HOST,
@@ -730,27 +760,41 @@ async def scan_and_read() -> tuple[dict | None, object | None, int | None]:
         raw = await client.read_gatt_char(CHAR_TEMP)
         return decode_packet(bytes(raw)), found_device, found_rssi
 
+def _relay_http_get(url: str, timeout: float = 8):
+    """GET JSON from a LAN relay URL. No redirects, no proxy."""
+    class _NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    req = Request(url, method='GET')
+    req.add_header('User-Agent', 'bt-smoker-monitor-relay/1.0')
+    req.add_header('Accept', 'application/json')
+    opener = build_opener(ProxyHandler({}), _NoRedirect())
+    with opener.open(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode())
+
+
 async def read_from_relay() -> tuple[dict | None, object | None, int | None]:
-    """Poll the ESP-32 LAN endpoint. Never follows a non-LAN host."""
-    url = relay_reading_url(state.get('relay_host') or DEFAULT_RELAY_HOST)
-    if not url:
+    """Poll ESP-32 /health (telemetry) then /api/reading (temps). Never follows a non-LAN host."""
+    host = state.get('relay_host') or DEFAULT_RELAY_HOST
+    health_url = relay_health_url(host)
+    reading_url = relay_reading_url(host)
+    if not health_url or not reading_url:
         log.warning('Relay host is not a LAN address; skipping poll')
         return None, None, None
 
-    def _get():
-        # No redirects and no HTTP(S)_PROXY: a LAN host must not bounce us onto the WAN.
-        class _NoRedirect(HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-        req = Request(url, method='GET')
-        req.add_header('User-Agent', 'bt-smoker-monitor-relay/1.0')
-        req.add_header('Accept', 'application/json')
-        opener = build_opener(ProxyHandler({}), _NoRedirect())
-        with opener.open(req, timeout=8) as resp:
-            return json.loads(resp.read().decode())
+    loop = asyncio.get_event_loop()
+    try:
+        health = await loop.run_in_executor(None, _relay_http_get, health_url)
+        _apply_relay_telemetry(parse_relay_telemetry(health))
+    except Exception:
+        log.exception('Relay /health poll failed')
 
     try:
-        payload = await asyncio.get_event_loop().run_in_executor(None, _get)
+        payload = await loop.run_in_executor(None, _relay_http_get, reading_url)
+    except HTTPError as exc:
+        if exc.code != 503:
+            log.exception('Relay poll failed')
+        return None, None, None
     except Exception:
         log.exception('Relay poll failed')
         return None, None, None
@@ -764,7 +808,7 @@ async def read_from_relay() -> tuple[dict | None, object | None, int | None]:
         state['ip'] = smoker_ip.strip()
 
     rssi = payload.get('rssi')
-    rssi_i = rssi if isinstance(rssi, int) else None
+    rssi_i = rssi if isinstance(rssi, int) else state.get('bleRssi')
     print(f'Relay reading  grill={dec["grill"]}°F  set={dec["setPoint"]}°F')
     return dec, None, rssi_i
 
@@ -854,6 +898,9 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
         dec['adapter']     = _adapter_footer_label()
         dec['address']     = state['address']
     dec['rssi']            = state['rssi']
+    dec['wifiRssi']        = state.get('wifiRssi')
+    dec['bleRssi']         = state.get('bleRssi')
+    dec['lastErr']         = state.get('lastErr') or ''
     dec['ts']              = tick_time
     dec['interval']        = state['interval']
     dec['eta']             = state['probe_eta'][:]
@@ -877,11 +924,39 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
     log.info(f'Smoker: {dec["grill"]}°F  Set: {dec["setPoint"]}°F  Probes: [{probes_str}]')
     return smoker_was_offline
 
+def _apply_relay_telemetry(tel: dict | None) -> None:
+    """Store ESP /health radios. Never sets smoker_online / connected."""
+    if not tel:
+        return
+    state['wifiRssi'] = tel.get('wifiRssi')
+    state['bleRssi'] = tel.get('bleRssi')
+    state['lastErr'] = tel.get('lastErr') or ''
+    if state['bleRssi'] is not None:
+        state['rssi'] = state['bleRssi']
+
+
+def _relay_telemetry_msg() -> dict:
+    return {
+        'rssi': state.get('rssi'),
+        'wifiRssi': state.get('wifiRssi'),
+        'bleRssi': state.get('bleRssi'),
+        'lastErr': state.get('lastErr') or '',
+        'connection': state.get('connection') or CONNECTION_LOCAL,
+        'relay_host': state.get('relay_host') or '',
+        'ip': state.get('ip'),
+    }
+
+
 def _mark_disconnected():
     """Clear stale temp/probe values and flag the cached 'last' payload as disconnected."""
     state['smoker_online'] = False
-    state['rssi'] = None
-    state['ip']   = None   # will be re-read on reconnect
+    relay = (state.get('connection') or CONNECTION_LOCAL) == CONNECTION_RELAY
+    if not relay:
+        state['rssi'] = None
+        state['wifiRssi'] = None
+        state['bleRssi'] = None
+        state['lastErr'] = ''
+        state['ip'] = None   # will be re-read on reconnect
     state['probe_eta']     = [None, None]
     state['probe_stalled'] = [False, False]
     # Rebuild state['last'] as a new dict — the previous dict is shared with the last
@@ -893,7 +968,10 @@ def _mark_disconnected():
             'connected': False,
             'grill':     None,
             'probes':    [None, None],
-            'rssi':      None,
+            'rssi':      state.get('rssi'),
+            'wifiRssi':  state.get('wifiRssi'),
+            'bleRssi':   state.get('bleRssi'),
+            'lastErr':   state.get('lastErr') or '',
             'eta':       [None, None],
             'stalled':   [False, False],
         }
@@ -934,7 +1012,7 @@ async def poll_loop(interval: int):
             else:
                 # Scan found nothing
                 _mark_disconnected()
-                await broadcast({'smoker_offline': True, 'connected': False})
+                await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
                 if not smoker_was_offline:
                     print('Smoker not found — will keep retrying.')
                     add_log('WARN', 'Smoker offline — retrying…', 'tag-warn', time.time())
@@ -956,7 +1034,7 @@ async def poll_loop(interval: int):
                 consecutive_inprogress = 0
                 log.exception('BLE D-Bus error during scan/read')
             _mark_disconnected()
-            await broadcast({'smoker_offline': True, 'connected': False})
+            await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
             if not smoker_was_offline:
                 print('Smoker unreachable — will keep retrying.')
                 add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', time.time())
@@ -968,7 +1046,7 @@ async def poll_loop(interval: int):
             consecutive_inprogress = 0
             log.exception('BLE error/timeout during scan/read')
             _mark_disconnected()
-            await broadcast({'smoker_offline': True, 'connected': False})
+            await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
             if not smoker_was_offline:
                 print('Smoker unreachable — will keep retrying.')
                 add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', time.time())
@@ -978,7 +1056,7 @@ async def poll_loop(interval: int):
             consecutive_inprogress = 0
             log.exception('Unexpected error in poll loop')
             _mark_disconnected()
-            await broadcast({'smoker_offline': True, 'connected': False})
+            await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
             if not smoker_was_offline:
                 print('Smoker unreachable — will keep retrying.')
                 add_log('WARN', 'Smoker unreachable — retrying…', 'tag-warn', time.time())
@@ -1063,6 +1141,13 @@ async def api_state():
     last = dict(state['last']) if state['last'] else {}
     last['connected'] = bool(state.get('smoker_online'))
     last['probeUiTargets'] = state.get('probe_ui_targets', [None, None])[:]
+    last['rssi'] = state.get('rssi')
+    last['wifiRssi'] = state.get('wifiRssi')
+    last['bleRssi'] = state.get('bleRssi')
+    last['lastErr'] = state.get('lastErr') or ''
+    last['connection'] = state.get('connection') or CONNECTION_LOCAL
+    last['relay_host'] = state.get('relay_host') or DEFAULT_RELAY_HOST
+    last['ip'] = state.get('ip')
     return last
 
 @app.get('/api/config')

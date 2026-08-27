@@ -123,6 +123,19 @@ class Firmware(unittest.TestCase):
         self.assertNotIn('3232', FIRMWARE)
         ota = FIRMWARE.split('static void handleOtaPost', 1)[1].split('static void', 1)[0]
         self.assertIn('headerTokenOk', ota)
+
+    def test_cook_ui_relay_telemetry_chips(self):
+        self.assertIn('id="chipBtWrap"', HTML)
+        self.assertIn('id="chipWifiWrap"', HTML)
+        self.assertIn('id="chipErrWrap"', HTML)
+        self.assertIn('BT Signal', HTML)
+        self.assertIn('function updateSigChips', HTML)
+        self.assertIn("fetch('/api/state')", HTML)
+        self.assertIn('parse_relay_telemetry', SERVER)
+        self.assertIn('_apply_relay_telemetry', SERVER)
+        self.assertIn("last['wifiRssi']", SERVER)
+        self.assertIn("last['bleRssi']", SERVER)
+        self.assertIn("last['lastErr']", SERVER)
         name = FIRMWARE.split('static void handleNamePost', 1)[1].split('static void', 1)[0]
         self.assertIn('requireAuth', name)
 
