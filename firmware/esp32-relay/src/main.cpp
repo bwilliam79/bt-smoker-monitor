@@ -287,7 +287,7 @@ static bool subscribeAll(NimBLEClient *client) {
       if (!wantNotify && !wantIndicate) {
         continue;
       }
-      if (ch->subscribe(onNotify, wantNotify, false)) {
+      if (ch->subscribe(wantNotify, onNotify, false)) {
         n++;
         Serial.printf("subscribed %s notify=%d\n", ch->getUUID().toString().c_str(), wantNotify ? 1 : 0);
       } else {
