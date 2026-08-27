@@ -77,6 +77,7 @@ CONNECTION_LOCAL = 'local'
 CONNECTION_RELAY = 'relay'
 DEFAULT_RELAY_HOST = '192.168.4.1'
 _SINGLE_LABEL = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$')
+_adapter_names: dict[str, str] = {}
 
 
 def _host_is_lan(host: str) -> bool:
@@ -644,12 +645,14 @@ async def _process_reading(dec: dict, tick_time: float, smoker_was_offline: bool
                 log.info(f'Probe {i + 1} stall detected at {temp}°F')
 
     dec['ip']              = state['ip']
-    dec['address']         = state['address']
     dec['connection']      = state.get('connection') or CONNECTION_LOCAL
     if dec['connection'] == CONNECTION_RELAY:
-        dec['adapter']     = 'Relay'
+        dec['adapter']     = None
+        dec['relay_host']  = state.get('relay_host') or ''
+        dec['address']     = None
     else:
-        dec['adapter']     = state.get('adapter') or 'default'
+        dec['adapter']     = _adapter_footer_label()
+        dec['address']     = state['address']
     dec['rssi']            = state['rssi']
     dec['ts']              = tick_time
     dec['interval']        = state['interval']
@@ -945,8 +948,16 @@ async def post_probe_targets(body: dict):
     save_config(state.get('ntfy_topic') or '', state.get('adapter') or '', state['probe_ui_targets'])
     return {'ok': True, 'targets': state['probe_ui_targets']}
 
-@app.get('/api/adapters')
-async def get_adapters():
+def _adapter_footer_label() -> str:
+    """hciN (real name) for the log footer. Never a fake id."""
+    aid = state.get('adapter') or ''
+    if not aid:
+        return 'default'
+    name = _adapter_names.get(aid) or ''
+    return f'{aid} ({name})' if name else aid
+
+
+def _list_adapters() -> list[dict]:
     """List available Bluetooth adapters with USB product names from sysfs."""
     adapters = []
     try:
@@ -955,26 +966,28 @@ async def get_adapters():
             for hci_link in sorted(bt_dir.iterdir()):
                 hci_id = hci_link.name
                 real = hci_link.resolve()
-                # Walk up from .../bluetooth/hciX until we find a dir with a 'product' file
                 usb_dev = real.parent
                 while usb_dev != usb_dev.parent and not (usb_dev / 'product').exists():
                     usb_dev = usb_dev.parent
                 product = _read_sysfs(usb_dev / 'product')
                 manufacturer = _read_sysfs(usb_dev / 'manufacturer')
-                # Build a friendly label from USB descriptor strings
                 if manufacturer and product:
                     name = f'{manufacturer} {product}' if manufacturer not in product else product
                 elif product:
                     name = product
                 else:
                     name = ''
-                # Check if adapter is up/running by reading rfkill + operstate from sysfs.
-                # Avoids shelling out to the deprecated hciconfig binary.
+                _adapter_names[hci_id] = name
                 up = _is_adapter_up(hci_link)
                 adapters.append({'id': hci_id, 'name': name, 'up': up})
     except Exception:
         log.exception('Failed to enumerate adapters')
-    return {'adapters': adapters, 'current': state.get('adapter') or ''}
+    return adapters
+
+
+@app.get('/api/adapters')
+async def get_adapters():
+    return {'adapters': _list_adapters(), 'current': state.get('adapter') or ''}
 
 
 def _read_sysfs(path: Path) -> str:
@@ -1113,6 +1126,7 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
                 except (ValueError, TypeError):
                     pass
 
+    _list_adapters()
     print(f'ntfy topic : {state["ntfy_topic"] or "(disabled)"}')
     print(f'BT adapter : {state["adapter"] or "(system default)"}')
     if state['connection'] == CONNECTION_RELAY:
