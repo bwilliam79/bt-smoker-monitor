@@ -202,5 +202,16 @@ class RelayHealthTests(unittest.TestCase):
         self.assertTrue(all(h.startswith('198.51.100.') for h in hosts))
 
 
+
+    def test_skips_docker_and_libvirt_bridges(self):
+        hosts = H['discovery_probe_hosts'](
+            ['203.0.113.23', '172.17.0.1', '203.0.113.1'],
+            ['203.0.113.118'],
+        )
+        self.assertIn('203.0.113.118', hosts)
+        self.assertTrue(all(h.startswith('198.51.100.') for h in hosts))
+        self.assertNotIn('172.17.0.1', hosts)
+        self.assertNotIn('203.0.113.1', hosts)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
