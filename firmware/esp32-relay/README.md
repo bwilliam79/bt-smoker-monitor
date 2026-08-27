@@ -8,8 +8,9 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 
 | Path | Notes |
 |------|--------|
-| `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`). `200` when a packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
-| `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
+| `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`, `char`). `200` when a 20-byte NXE packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
+| `GET /api/gatt` | Cached service/characteristic dump (`r/w/n/i`, last-read hex). No Bluetooth addresses. Unauthenticated LAN diagnostic. |
+| `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`, `packetChar`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
 | `GET /` | SoftAP: house Wi-Fi + name + OTA token form. STA (LAN IP): **name only** (auth). House PSK is not accepted on the STA IP. |
 | `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional OTA token to NVS. `404` on STA. |
 | `POST /name` | STA rename. Requires `X-Relay-Token` or form `token` (token lives in NVS, set on SoftAP, not git). |
@@ -54,4 +55,6 @@ Crash-fix (2026-08-27): do not call `scan->stop()` from the NimBLE advertise cal
 
 ## Packet
 
-Same NXE prefix and `0000cc01-…` characteristic as `server.py`: little-endian u16 setpoint @ 4, grill @ 6, probe targets @ 8/10, probes @ 16/18.
+Same decoder as `server.py` `decode_packet`: reject `len < 20`; little-endian u16 setpoint @ 4, grill @ 6, probe targets @ 8/10, probes @ 16/18.
+
+`0000cc01-…` **READ** on this grill is 14 ASCII bytes of the grill LAN IP, not the temp packet (bb01 is the IP char; cc01 currently duplicates it). Temps come from a **notify** (or indicate) on whichever characteristic carries the 20-byte NXE frame. The firmware subscribes every `canNotify`/`canIndicate` characteristic (CCCD only — no protocol value writes, no AT-02 `55 AA`). `/api/reading.char` and `/health.packetChar` name the UUID that produced the last valid packet. USB `pio run -t upload` only (do not erase NVS).
