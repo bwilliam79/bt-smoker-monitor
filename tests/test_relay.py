@@ -201,17 +201,18 @@ class RelayHealthTests(unittest.TestCase):
         self.assertNotIn('8.8.8.8', hosts)
         self.assertTrue(all(h.startswith('192.168.1.') for h in hosts))
 
-
-
-    def test_skips_docker_and_libvirt_bridges(self):
+    def test_skips_docker_and_libvirt_slash24s(self):
         hosts = H['discovery_probe_hosts'](
-            ['192.168.1.23', '172.17.0.1', '192.168.122.1'],
+            ['172.17.0.1', '192.168.122.1', '192.168.1.23'],
             ['192.168.1.118'],
         )
         self.assertIn('192.168.1.118', hosts)
+        self.assertIn('192.168.1.23', hosts)
         self.assertTrue(all(h.startswith('192.168.1.') for h in hosts))
-        self.assertNotIn('172.17.0.1', hosts)
-        self.assertNotIn('192.168.122.1', hosts)
+        self.assertFalse(H['lan_scan_source_ok']('172.17.0.1'))
+        self.assertFalse(H['lan_scan_source_ok']('192.168.122.1'))
+        self.assertTrue(H['lan_scan_source_ok']('192.168.1.23'))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

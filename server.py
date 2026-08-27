@@ -204,8 +204,27 @@ def parse_relay_health(payload: dict, probed_host: str) -> dict | None:
     return {'name': name, 'host': host}
 
 
+# Docker user-defined bridges (172.16/12) and libvirt virbr0. Expanding those
+# /24s hangs Settings → Scan on a host that also runs other stacks.
+_SKIP_SCAN_NETS = (
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.122.0/24'),
+)
+
+
+def lan_scan_source_ok(raw: str) -> bool:
+    """True if this host IP's /24 should be probed for ESP-32 relays."""
+    try:
+        ip = ipaddress.ip_address((raw or '').strip())
+    except ValueError:
+        return False
+    if ip.version != 4 or not ip.is_private or ip.is_loopback:
+        return False
+    return not any(ip in net for net in _SKIP_SCAN_NETS)
+
+
 def discovery_probe_hosts(local_ipv4s: list[str], extra_hosts: list[str] | None = None) -> list[str]:
-    """Build unique LAN IPv4 probe list from local /24s plus extras (saved host, etc.)."""
+    """Build unique LAN IPv4 probe list from house /24s plus extras (saved host, etc.)."""
     hosts: list[str] = []
     seen: set[str] = set()
 
@@ -232,18 +251,9 @@ def discovery_probe_hosts(local_ipv4s: list[str], extra_hosts: list[str] | None 
             add(parsed[0])
 
     for addr in local_ipv4s or []:
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
+        if not lan_scan_source_ok(addr):
             continue
-        if ip.version != 4 or not ip.is_private:
-            continue
-        # Host-net Docker/libvirt bridges are private; expanding those /24s
-        # stalls Settings for tens of seconds. Extras still probe a saved IP.
-        if ip in ipaddress.ip_network('172.16.0.0/12'):
-            continue
-        if ip in ipaddress.ip_network('192.168.122.0/24'):
-            continue
+        ip = ipaddress.ip_address(addr)
         net = ipaddress.ip_network(f'{ip}/24', strict=False)
         for host_ip in net.hosts():
             add(str(host_ip))
@@ -309,13 +319,21 @@ def _local_ipv4_addrs() -> list[str]:
             s.close()
     except Exception:
         pass
+    try:
+        out_h = subprocess.check_output(
+            ['hostname', '-I'], text=True, timeout=1, stderr=subprocess.DEVNULL
+        )
+        for tok in out_h.split():
+            found.add(tok.split('%')[0])
+    except Exception:
+        pass
     out = []
     for ip in sorted(found):
         try:
             addr = ipaddress.ip_address(ip)
         except ValueError:
             continue
-        if addr.is_private and not addr.is_loopback:
+        if lan_scan_source_ok(ip):
             out.append(ip)
     return out
 
