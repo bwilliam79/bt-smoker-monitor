@@ -11,10 +11,10 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 | `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`, `char`). `200` when a 20-byte NXE packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
 | `GET /api/gatt` | Cached service/characteristic dump (`r/w/n/i`, last-read hex). No Bluetooth addresses. Unauthenticated LAN diagnostic. |
 | `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`, `packetChar`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
-| `GET /` | SoftAP: house Wi-Fi + name + OTA token form. STA (LAN IP): **name only** (auth). House PSK is not accepted on the STA IP. |
-| `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional OTA token to NVS. `404` on STA. |
-| `POST /name` | STA rename. Requires `X-Relay-Token` or form `token` (token lives in NVS, set on SoftAP, not git). |
-| `POST /ota` | HTTP firmware update on LAN STA (SoftAP recovery). Auth required. Pauses BLE. Single-slot + USB recovery. Body cap ~1.5 MB. No ArduinoOTA UDP :3232. |
+| `GET /` | SoftAP: house Wi-Fi + name + device password form. STA (LAN IP): name + password (first set is unauthenticated; later needs the current password). House PSK is not accepted on the STA IP. |
+| `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional device password to NVS. `404` on STA. |
+| `POST /name` | STA rename / set password. Empty password: this POST sets it (8-64 chars, no default). After that, form `password` or `X-Relay-Password` required. |
+| `POST /ota` | HTTP firmware update. Header `X-Relay-Password` required (minted token is dead). 401 if no password is set. Pauses BLE. Single-slot + USB recovery. Body cap ~1.5 MB. No ArduinoOTA UDP :3232. |
 
 The HTTP server binds to the board's own AP/STA address on port 80. It is not a WAN service. The Python app will refuse to poll a non-LAN host.
 
@@ -27,11 +27,11 @@ The HTTP server binds to the board's own AP/STA address on port 80. It is not a 
 
 Settings → ESP-32 relay discovers boards on the house LAN via `/health` and shows **name — IP**. SoftAP `192.168.4.1` is only reachable from a client associated with the AP.
 
-**House LAN from a phone:** join SoftAP `smoker-relay`, open `http://192.168.4.1/`, set a **relay name**, house SSID, password, and OTA token. Those stay in NVS (not git). After STA joins, the LAN IP serves a **name-only** form (`POST /name`, token required). `POST /wifi` is 404 on that IP so the house PSK is not sitting on the STA address. Settings → ESP-32 relay lists name + IP — pick it.
+**House LAN from a phone:** join SoftAP `smoker-relay`, open `http://192.168.4.1/`, set a **relay name**, house SSID, Wi-Fi password, and device password. Those stay in NVS (not git). After STA joins, `http://<sta-ip>/` sets or changes the device password and can upload OTA. USB serial `pass <password>` also sets it. `POST /wifi` is 404 on the STA IP so the house PSK is not sitting on that address.
 
 Do not UniFi-forward the SoftAP, `192.168.1.118`, or port 80. Do not put house Wi-Fi or the OTA token in git or `platformio.ini`.
 
-**OTA:** `curl -H 'X-Relay-Token: <nvs>' -F 'firmware=@firmware.bin' http://<sta-ip>/ota`. Token is minted into NVS on first boot (USB serial prints it once) or set on SoftAP. `GET /health` and `GET /api/reading` stay unauthenticated. Pause BLE during OTA; NVS is not erased. First cut is single-slot; USB `pio run -t upload` is the recovery path.
+**OTA:** `curl -H 'X-Relay-Password: <device-password>' -F 'firmware=@firmware.bin' http://<sta-ip>/ota`. No default password and no minted token (`tok` is removed on boot). Set the password once on the LAN/SoftAP form or USB serial. `GET /health`, `GET /api/reading`, and `GET /api/gatt` stay unauthenticated. Pause BLE during OTA; Wi-Fi NVS is not erased. USB `pio run -t upload` is the recovery path.
 
 SoftAP PSK lives in `secrets.h` (gitignored). Copy `secrets.example.h` to `secrets.h` before a local build. Do not commit it. The flashed board already has its PSK in firmware; this change is repo-only until the next flash.
 

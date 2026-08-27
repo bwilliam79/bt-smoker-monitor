@@ -942,8 +942,6 @@ def _apply_relay_telemetry(tel: dict | None) -> None:
     state['lastErr'] = tel.get('lastErr') or ''
     if tel.get('sta'):
         state['relay_sta'] = tel['sta']
-        if not state.get('ip'):
-            state['ip'] = tel['sta']
     if tel.get('name'):
         state['relay_name'] = tel['name']
     if state['bleRssi'] is not None:
@@ -958,7 +956,7 @@ def _relay_telemetry_msg() -> dict:
         'lastErr': state.get('lastErr') or '',
         'connection': state.get('connection') or CONNECTION_LOCAL,
         'relay_host': state.get('relay_host') or '',
-        'ip': state.get('ip') or state.get('relay_sta'),
+        'ip': state.get('ip'),
         'interval': state.get('interval'),
         'adapter': state.get('adapter'),
         'address': state.get('address'),
@@ -1167,7 +1165,7 @@ async def api_state():
     last['lastErr'] = state.get('lastErr') or ''
     last['connection'] = state.get('connection') or CONNECTION_LOCAL
     last['relay_host'] = state.get('relay_host') or DEFAULT_RELAY_HOST
-    last['ip'] = state.get('ip') or state.get('relay_sta')
+    last['ip'] = state.get('ip')
     last['interval'] = state.get('interval')
     last['adapter'] = state.get('adapter')
     last['address'] = state.get('address')

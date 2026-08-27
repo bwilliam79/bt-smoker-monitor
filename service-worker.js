@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bt-smoker-v6';
+const CACHE_NAME = 'bt-smoker-v7';
 // Only cache '/' — the server returns index.html content at '/', so caching
 // '/index.html' separately creates a duplicate entry that races on refresh.
 const urlsToCache = [
