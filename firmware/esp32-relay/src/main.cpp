@@ -5,6 +5,7 @@
 #include <Update.h>
 #include <NimBLEDevice.h>
 #include <esp_system.h>
+#include <cstring>
 
 #ifndef RELAY_AP_PASS
 #include "secrets.h"
@@ -32,6 +33,8 @@ static String lastJson = "{\"ok\":false}";
 static String lastName = "";
 static String lastIp = "";
 static String lastErr = "";
+static String lastPacketChar = "";
+static String gattJson = "{\"ok\":false}";
 static String otaToken = "";
 static int lastRssi = 0;
 static bool haveReading = false;
@@ -46,11 +49,16 @@ static NimBLEAddress targetAddr;
 static NimBLEClient *bleClient = nullptr;
 static NimBLERemoteCharacteristic *tempChar = nullptr;
 static uint32_t lastReadMs = 0;
-static const uint32_t READ_EVERY_MS = 5000;
+static const uint32_t READ_EVERY_MS = 15000;
 static String staSsid = "";
 static String staStatus = "not joined";
 static String relayName = "smoker-relay";
 static uint32_t bleReadyMs = 0;
+
+static uint8_t notifyBuf[32];
+static size_t notifyLen = 0;
+static NimBLERemoteCharacteristic *notifySrc = nullptr;
+static volatile bool notifyPending = false;
 
 static uint16_t u16le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -99,51 +107,235 @@ static String makeToken() {
 
 static void setLastErr(const char *s) { lastErr = s; }
 
-static void publish(const uint8_t *data, size_t len) {
-  Serial.printf("pkt len=%u hex=", (unsigned)len);
-  for (size_t i = 0; i < len && i < 24; i++) {
-    Serial.printf("%02x", data[i]);
+static bool looksAscii(const uint8_t *data, size_t len) {
+  if (!len) {
+    return false;
   }
-  Serial.println();
-  if (len < 8) {
-    setLastErr("packet too short");
-    Serial.printf("packet too short len=%u\n", (unsigned)len);
-    return;
-  }
-  bool printable = len > 0;
   for (size_t i = 0; i < len; i++) {
     uint8_t c = data[i];
     if (c == 0) {
       break;
     }
     if (c < 32 || c > 126) {
-      printable = false;
-      break;
+      return false;
     }
   }
-  if (printable) {
+  return true;
+}
+
+static void hexAppend(String &out, const uint8_t *data, size_t len, size_t cap) {
+  char hex[3];
+  size_t n = len < cap ? len : cap;
+  for (size_t i = 0; i < n; i++) {
+    snprintf(hex, sizeof(hex), "%02x", data[i]);
+    out += hex;
+  }
+}
+
+static void publish(const uint8_t *data, size_t len, const char *uuid) {
+  Serial.printf("pkt len=%u hex=", (unsigned)len);
+  for (size_t i = 0; i < len && i < 24; i++) {
+    Serial.printf("%02x", data[i]);
+  }
+  Serial.println();
+  if (len < 20) {
+    setLastErr("packet too short");
+    Serial.printf("packet too short len=%u\n", (unsigned)len);
+    return;
+  }
+  if (looksAscii(data, len)) {
     setLastErr("ascii skip (not NXE temps)");
     Serial.println("skip ascii characteristic (not NXE temps)");
     return;
   }
   uint16_t setPoint = u16le(data + 4);
   uint16_t grill = u16le(data + 6);
-  uint16_t pt0 = (len >= 10) ? u16le(data + 8) : 0;
-  uint16_t pt1 = (len >= 12) ? u16le(data + 10) : 0;
-  uint16_t p0 = (len >= 18) ? u16le(data + 16) : ((len >= 14) ? u16le(data + 12) : 0);
-  uint16_t p1 = (len >= 20) ? u16le(data + 18) : ((len >= 16) ? u16le(data + 14) : 0);
-  char buf[360];
+  uint16_t pt0 = u16le(data + 8);
+  uint16_t pt1 = u16le(data + 10);
+  uint16_t p0 = u16le(data + 16);
+  uint16_t p1 = u16le(data + 18);
+  if (uuid && uuid[0]) {
+    lastPacketChar = uuid;
+  }
+  String charEsc = jsonEscape(lastPacketChar);
+  char buf[420];
   snprintf(
       buf, sizeof(buf),
       "{\"ok\":true,\"setPoint\":%u,\"grill\":%u,\"probeTargets\":[%u,%u],"
-      "\"probes\":[%u,%u],\"rssi\":%d,\"wifiRssi\":%d,\"name\":\"%s\",\"smokerIp\":\"%s\",\"len\":%u}",
+      "\"probes\":[%u,%u],\"rssi\":%d,\"wifiRssi\":%d,\"name\":\"%s\",\"smokerIp\":\"%s\","
+      "\"len\":%u,\"char\":\"%s\"}",
       setPoint, grill, pt0, pt1, p0, p1, lastRssi,
       (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0,
-      lastName.c_str(), lastIp.c_str(), (unsigned)len);
+      lastName.c_str(), lastIp.c_str(), (unsigned)len, charEsc.c_str());
   lastJson = buf;
   haveReading = true;
   setLastErr("");
-  Serial.printf("reading ok grill=%u set=%u len=%u\n", grill, setPoint, (unsigned)len);
+  Serial.printf("reading ok grill=%u set=%u len=%u chr=%s\n", grill, setPoint, (unsigned)len,
+                lastPacketChar.c_str());
+}
+
+static void onNotify(NimBLERemoteCharacteristic *ch, uint8_t *data, size_t len, bool isNotify) {
+  (void)isNotify;
+  if (notifyPending || !data || len == 0) {
+    return;
+  }
+  size_t n = len < sizeof(notifyBuf) ? len : sizeof(notifyBuf);
+  memcpy(notifyBuf, data, n);
+  notifyLen = n;
+  notifySrc = ch;
+  notifyPending = true;
+}
+
+static void dumpGattJson(NimBLEClient *client) {
+  gattJson = "{\"ok\":false}";
+  if (!client || !client->isConnected()) {
+    return;
+  }
+  std::vector<NimBLERemoteService *> *services = client->getServices(true);
+  if (!services) {
+    Serial.println("gatt: no services");
+    return;
+  }
+  String out = "{\"ok\":true,\"services\":[";
+  bool firstSvc = true;
+  Serial.printf("gatt services=%u\n", (unsigned)services->size());
+  for (auto *svc : *services) {
+    if (!svc) {
+      continue;
+    }
+    std::string su = svc->getUUID().toString();
+    Serial.printf("svc %s\n", su.c_str());
+    if (!firstSvc) {
+      out += ",";
+    }
+    firstSvc = false;
+    out += "{\"uuid\":\"";
+    out += jsonEscape(String(su.c_str()));
+    out += "\",\"chars\":[";
+    std::vector<NimBLERemoteCharacteristic *> *chars = svc->getCharacteristics(true);
+    bool firstCh = true;
+    if (chars) {
+      for (auto *ch : *chars) {
+        if (!ch) {
+          continue;
+        }
+        std::string cu = ch->getUUID().toString();
+        Serial.printf(
+            "  chr %s r=%d w=%d n=%d i=%d\n",
+            cu.c_str(),
+            ch->canRead() ? 1 : 0,
+            ch->canWrite() ? 1 : 0,
+            ch->canNotify() ? 1 : 0,
+            ch->canIndicate() ? 1 : 0);
+        if (!firstCh) {
+          out += ",";
+        }
+        firstCh = false;
+        out += "{\"uuid\":\"";
+        out += jsonEscape(String(cu.c_str()));
+        out += "\",\"r\":";
+        out += ch->canRead() ? "1" : "0";
+        out += ",\"w\":";
+        out += ch->canWrite() ? "1" : "0";
+        out += ",\"n\":";
+        out += ch->canNotify() ? "1" : "0";
+        out += ",\"i\":";
+        out += ch->canIndicate() ? "1" : "0";
+        if (ch->canRead()) {
+          std::string raw = ch->readValue();
+          out += ",\"len\":";
+          out += String((unsigned)raw.size());
+          out += ",\"hex\":\"";
+          hexAppend(out, reinterpret_cast<const uint8_t *>(raw.data()), raw.size(), 24);
+          out += "\"";
+          if (looksAscii(reinterpret_cast<const uint8_t *>(raw.data()), raw.size())) {
+            out += ",\"ascii\":1";
+          }
+        }
+        out += "}";
+      }
+    }
+    out += "]}";
+  }
+  out += "]}";
+  gattJson = out;
+}
+
+static bool subscribeAll(NimBLEClient *client) {
+  if (!client || !client->isConnected()) {
+    return false;
+  }
+  std::vector<NimBLERemoteService *> *services = client->getServices(false);
+  if (!services) {
+    return false;
+  }
+  unsigned n = 0;
+  for (auto *svc : *services) {
+    if (!svc) {
+      continue;
+    }
+    std::vector<NimBLERemoteCharacteristic *> *chars = svc->getCharacteristics(false);
+    if (!chars) {
+      continue;
+    }
+    for (auto *ch : *chars) {
+      if (!ch) {
+        continue;
+      }
+      bool wantNotify = ch->canNotify();
+      bool wantIndicate = !wantNotify && ch->canIndicate();
+      if (!wantNotify && !wantIndicate) {
+        continue;
+      }
+      if (ch->subscribe(onNotify, wantNotify, false)) {
+        n++;
+        Serial.printf("subscribed %s notify=%d\n", ch->getUUID().toString().c_str(), wantNotify ? 1 : 0);
+      } else {
+        Serial.printf("subscribe failed %s\n", ch->getUUID().toString().c_str());
+      }
+    }
+  }
+  Serial.printf("subscribed count=%u\n", n);
+  return n > 0;
+}
+
+static void tryReadBinary(NimBLEClient *client) {
+  if (!client || !client->isConnected()) {
+    return;
+  }
+  std::vector<NimBLERemoteService *> *services = client->getServices(false);
+  if (!services) {
+    return;
+  }
+  for (auto *svc : *services) {
+    if (!svc) {
+      continue;
+    }
+    std::vector<NimBLERemoteCharacteristic *> *chars = svc->getCharacteristics(false);
+    if (!chars) {
+      continue;
+    }
+    for (auto *ch : *chars) {
+      if (!ch || !ch->canRead()) {
+        continue;
+      }
+      if (ch->getUUID().equals(CHAR_IP)) {
+        continue;
+      }
+      std::string raw = ch->readValue();
+      if (raw.size() < 20) {
+        continue;
+      }
+      if (looksAscii(reinterpret_cast<const uint8_t *>(raw.data()), raw.size())) {
+        continue;
+      }
+      std::string cu = ch->getUUID().toString();
+      publish(reinterpret_cast<const uint8_t *>(raw.data()), raw.size(), cu.c_str());
+      if (haveReading) {
+        return;
+      }
+    }
+  }
 }
 
 class ScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
@@ -185,7 +377,7 @@ static NimBLERemoteCharacteristic *findChar(NimBLEClient *client, const NimBLEUU
   return nullptr;
 }
 
-static bool connectAndRead() {
+static bool connectAndSubscribe() {
   if (!haveTarget || otaBusy) {
     return false;
   }
@@ -198,20 +390,16 @@ static bool connectAndRead() {
     delay(200);
   }
   tempChar = nullptr;
+  notifyPending = false;
+  notifySrc = nullptr;
+  notifyLen = 0;
   if (!bleClient->connect(targetAddr, false)) {
     setLastErr("connect failed");
     Serial.println("connect failed");
     return false;
   }
   lastRssi = bleClient->getRssi();
-  tempChar = findChar(bleClient, CHAR_TEMP);
-  if (!tempChar || !tempChar->canRead()) {
-    setLastErr("no temp characteristic");
-    Serial.println("no temp characteristic");
-    bleClient->disconnect();
-    tempChar = nullptr;
-    return false;
-  }
+  dumpGattJson(bleClient);
   NimBLERemoteCharacteristic *ipCh = findChar(bleClient, CHAR_IP);
   if (ipCh && ipCh->canRead()) {
     std::string ip = ipCh->readValue();
@@ -223,9 +411,24 @@ static bool connectAndRead() {
     }
     lastIp = cleaned;
   }
-  std::string raw = tempChar->readValue();
-  publish(reinterpret_cast<const uint8_t *>(raw.data()), raw.size());
-  return haveReading;
+  tempChar = findChar(bleClient, CHAR_TEMP);
+  if (tempChar && tempChar->canRead()) {
+    std::string raw = tempChar->readValue();
+    std::string cu = tempChar->getUUID().toString();
+    publish(reinterpret_cast<const uint8_t *>(raw.data()), raw.size(), cu.c_str());
+  }
+  if (!haveReading) {
+    tryReadBinary(bleClient);
+  }
+  if (subscribeAll(bleClient)) {
+    if (!haveReading) {
+      setLastErr("subscribed, waiting packet");
+    }
+  } else if (!haveReading) {
+    setLastErr("no notify characteristic");
+    Serial.println("no notify characteristic");
+  }
+  return true;
 }
 
 static void onScanDone(NimBLEScanResults) { scanning = false; }
@@ -235,6 +438,8 @@ static void pauseBle() {
   scanning = false;
   haveTarget = false;
   tempChar = nullptr;
+  notifyPending = false;
+  notifySrc = nullptr;
   if (bleClient && bleClient->isConnected()) {
     bleClient->disconnect();
   }
@@ -280,22 +485,27 @@ static void handleReading() {
   server.send(haveReading ? 200 : 503, "application/json", lastJson);
 }
 
+static void handleGatt() {
+  server.send(200, "application/json", gattJson);
+}
+
 static void handleHealth() {
   String nameEsc = jsonEscape(relayName);
   String errEsc = jsonEscape(lastErr);
+  String charEsc = jsonEscape(lastPacketChar);
   String ap = isSoftAp() ? WiFi.softAPIP().toString() : "";
   String sta = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
-  char buf[420];
+  char buf[520];
   int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   snprintf(buf, sizeof(buf),
            "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
-           "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\"}",
+           "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\",\"packetChar\":\"%s\"}",
            nameEsc.c_str(),
            bleClient && bleClient->isConnected() ? "true" : "false",
            haveReading ? "true" : "false",
            ap.c_str(),
            sta.c_str(),
-           wifiRssi, lastRssi, errEsc.c_str());
+           wifiRssi, lastRssi, errEsc.c_str(), charEsc.c_str());
   server.send(200, "application/json", buf);
 }
 
@@ -540,6 +750,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("smoker-ble-relay boot");
+  Serial.println("fw notify-subscribe");
 
   startWifi();
 
@@ -550,6 +761,7 @@ void setup() {
   server.on("/name", HTTP_POST, handleNamePost);
   server.on("/ota", HTTP_POST, handleOtaPost, handleOtaUpload);
   server.on("/api/reading", HTTP_GET, handleReading);
+  server.on("/api/gatt", HTTP_GET, handleGatt);
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/generate_204", HTTP_GET, handleCaptive);
   server.on("/hotspot-detect.html", HTTP_GET, handleCaptive);
@@ -578,22 +790,28 @@ void loop() {
     return;
   }
 
+  if (notifyPending) {
+    notifyPending = false;
+    const char *uuid = "";
+    std::string cu;
+    if (notifySrc) {
+      cu = notifySrc->getUUID().toString();
+      uuid = cu.c_str();
+    }
+    publish(notifyBuf, notifyLen, uuid);
+  }
+
   if (bleClient && bleClient->isConnected()) {
-    if (millis() - lastReadMs >= READ_EVERY_MS) {
+    if (!haveReading && millis() - lastReadMs >= READ_EVERY_MS) {
       lastReadMs = millis();
-      if (tempChar && tempChar->canRead()) {
-        lastRssi = bleClient->getRssi();
-        std::string raw = tempChar->readValue();
-        publish(reinterpret_cast<const uint8_t *>(raw.data()), raw.size());
-      } else {
-        bleClient->disconnect();
-        tempChar = nullptr;
-      }
+      lastRssi = bleClient->getRssi();
+      tryReadBinary(bleClient);
     }
     return;
   }
 
   tempChar = nullptr;
+  notifySrc = nullptr;
 
   if (haveTarget && scanning) {
     NimBLEDevice::getScan()->stop();
@@ -610,7 +828,7 @@ void loop() {
   }
 
   if (haveTarget && !(bleClient && bleClient->isConnected())) {
-    if (connectAndRead()) {
+    if (connectAndSubscribe()) {
       lastReadMs = millis();
     } else {
       haveTarget = false;

@@ -113,6 +113,16 @@ class Firmware(unittest.TestCase):
         self.assertIn('bleRssi', FIRMWARE)
         self.assertIn('lastErr', FIRMWARE)
 
+    def test_gatt_dump_and_notify_subscribe(self):
+        self.assertIn("/api/gatt", FIRMWARE)
+        self.assertIn("subscribeAll", FIRMWARE)
+        self.assertIn("decode_packet", FIRMWARE)
+        self.assertIn("len < 20", FIRMWARE)
+        self.assertNotIn("55 AA", FIRMWARE)
+        self.assertNotIn("55 aa", FIRMWARE)
+        gatt = FIRMWARE.split("static void handleGatt", 1)[1].split("static void", 1)[0]
+        self.assertNotIn("requireAuth", gatt)
+
     def test_ota_auth_no_arduino_udp(self):
         self.assertIn('Update.h', FIRMWARE)
         self.assertIn('OTA_MAX', FIRMWARE)
