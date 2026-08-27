@@ -35,7 +35,7 @@ static String lastIp = "";
 static String lastErr = "";
 static String lastPacketChar = "";
 static String gattJson = "{\"ok\":false}";
-static String otaToken = "";
+static String devicePass = "";
 static int lastRssi = 0;
 static bool haveReading = false;
 static bool scanning = false;
@@ -99,10 +99,52 @@ static String jsonEscape(const String &s) {
   return out;
 }
 
-static String makeToken() {
-  char buf[17];
-  snprintf(buf, sizeof(buf), "%08x%08x", (unsigned)esp_random(), (unsigned)esp_random());
-  return String(buf);
+static bool passwordOk(const String &pw) {
+  if (pw.length() < 8 || pw.length() > 64) {
+    return false;
+  }
+  for (size_t i = 0; i < pw.length(); i++) {
+    char c = pw[i];
+    if (c < 32 || c > 126 || c == '"' || c == '\\' || c == '<' || c == '>') {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool saveDevicePass(const String &pw) {
+  if (!passwordOk(pw)) {
+    return false;
+  }
+  devicePass = pw;
+  prefs.begin("relay", false);
+  prefs.putString("pw", devicePass);
+  prefs.remove("tok");
+  prefs.end();
+  return true;
+}
+
+static String serialLine = "";
+
+static void pollSerial() {
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      serialLine.trim();
+      if (serialLine.startsWith("pass ")) {
+        String pw = serialLine.substring(5);
+        pw.trim();
+        if (saveDevicePass(pw)) {
+          Serial.println("password saved");
+        } else {
+          Serial.println("password rejected");
+        }
+      }
+      serialLine = "";
+    } else if (serialLine.length() < 80) {
+      serialLine += c;
+    }
+  }
 }
 
 static void setLastErr(const char *s) { lastErr = s; }
@@ -452,21 +494,21 @@ static void pauseBle() {
 }
 
 static bool headerTokenOk() {
-  if (!otaToken.length()) {
+  if (!devicePass.length()) {
     return false;
   }
-  String t = server.header("X-Relay-Token");
+  String t = server.header("X-Relay-Password");
   t.trim();
-  return t.length() > 0 && t == otaToken;
+  return t.length() > 0 && t == devicePass;
 }
 
 static bool formTokenOk() {
-  if (!otaToken.length()) {
+  if (!devicePass.length()) {
     return false;
   }
-  String t = server.arg("token");
+  String t = server.arg("password");
   t.trim();
-  return t.length() > 0 && t == otaToken;
+  return t.length() > 0 && t == devicePass;
 }
 
 static bool tokenOk() {
@@ -519,7 +561,7 @@ static void sendSoftApForm(const char *flash) {
   html += "<h1>";
   html += relayName;
   html += "</h1>";
-  html += "<p>SoftAP. House Wi-Fi, relay name, and OTA token stay on this board (not git).</p>";
+  html += "<p>SoftAP. House Wi-Fi, relay name, and device password stay on this board (not git). No default password. GET telemetry stays open.</p>";
   if (flash && flash[0]) {
     html += "<p>";
     html += flash;
@@ -536,7 +578,7 @@ static void sendSoftApForm(const char *flash) {
   html += staSsid;
   html += "'></p>";
   html += "<p>Password<br><input name=pass type=password></p>";
-  html += "<p>OTA token (blank keeps current)<br><input name=token type=password maxlength=32></p>";
+  html += "<p>Device password (8+ chars, blank keeps current)<br><input name=password type=password maxlength=64></p>";
   html += "<p><button type=submit>Save / join house Wi-Fi</button></p>";
   html += "</form></body></html>";
   server.send(200, "text/html", html);
@@ -552,7 +594,7 @@ static void sendStaForm(const char *flash) {
   html += "<h1>";
   html += relayName;
   html += "</h1>";
-  html += "<p>LAN rename only. House Wi-Fi is not accepted on this page.</p>";
+  html += "<p>LAN rename and device password. House Wi-Fi is not accepted on this page. GET /health /api/reading /api/gatt stay open. POST /ota needs X-Relay-Password.</p>";
   if (flash && flash[0]) {
     html += "<p>";
     html += flash;
@@ -565,9 +607,17 @@ static void sendStaForm(const char *flash) {
   html += "<p>Relay name<br><input name=name maxlength=32 value='";
   html += relayName;
   html += "'></p>";
-  html += "<p>OTA token<br><input name=token type=password maxlength=32></p>";
-  html += "<p><button type=submit>Save name</button></p>";
-  html += "</form></body></html>";
+  html += "<p>Device password (required if already set; first time this sets it)<br><input name=password type=password maxlength=64></p>";
+  html += "<p>New password (optional)<br><input name=newpass type=password maxlength=64></p>";
+  html += "<p><button type=submit>Save</button></p>";
+  html += "</form>";
+  html += "<form id=otaForm>";
+  html += "<p>OTA firmware<br><input name=firmware type=file accept=.bin></p>";
+  html += "<p>OTA password<br><input id=otaPass type=password maxlength=64></p>";
+  html += "<p><button type=submit>Upload firmware</button></p>";
+  html += "</form>";
+  html += "<script>document.getElementById('otaForm').addEventListener('submit',async function(e){e.preventDefault();var pw=document.getElementById('otaPass').value;var f=e.target.firmware.files[0];if(!f){alert('pick a .bin');return;}var fd=new FormData();fd.append('firmware',f);var r=await fetch('/ota',{method:'POST',headers:{'X-Relay-Password':pw},body:fd});alert(await r.text());if(r.ok){setTimeout(function(){location.reload();},2000);}});</script>";
+  html += "</body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -623,16 +673,20 @@ static void handleWifiPost() {
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
   String name = sanitizeRelayName(server.arg("name"));
-  String tok = server.arg("token");
-  tok.trim();
+  String pw = server.arg("password");
+  pw.trim();
   ssid.trim();
   prefs.begin("relay", false);
   prefs.putString("name", name);
   relayName = name;
-  if (tok.length()) {
-    otaToken = tok;
-    prefs.putString("tok", otaToken);
+  prefs.end();
+  if (pw.length()) {
+    if (!saveDevicePass(pw)) {
+      sendSoftApForm("Password rejected (8-64 printable).");
+      return;
+    }
   }
+  prefs.begin("relay", false);
   if (!ssid.length()) {
     prefs.end();
     sendSoftApForm("Relay name saved. SSID required to join house Wi-Fi.");
@@ -647,15 +701,30 @@ static void handleWifiPost() {
 }
 
 static void handleNamePost() {
-  if (!requireAuth()) {
+  String pw = server.arg("password");
+  pw.trim();
+  String newpass = server.arg("newpass");
+  newpass.trim();
+  if (!devicePass.length()) {
+    if (!saveDevicePass(pw)) {
+      sendStaForm("Set a device password first (8-64 printable). No default.");
+      return;
+    }
+  } else if (!requireAuth()) {
     return;
+  }
+  if (newpass.length()) {
+    if (!saveDevicePass(newpass)) {
+      sendStaForm("New password rejected (8-64 printable).");
+      return;
+    }
   }
   String name = sanitizeRelayName(server.arg("name"));
   prefs.begin("relay", false);
   prefs.putString("name", name);
   prefs.end();
   relayName = name;
-  sendStaForm("Name saved.");
+  sendStaForm("Saved.");
 }
 
 static void handleOtaUpload() {
@@ -725,14 +794,12 @@ static void startWifi() {
   relayName = sanitizeRelayName(prefs.getString("name", "smoker-relay"));
   staSsid = prefs.getString("ssid", "");
   String pass = prefs.getString("pass", "");
-  otaToken = prefs.getString("tok", "");
-  if (!otaToken.length()) {
-    otaToken = makeToken();
-    prefs.putString("tok", otaToken);
-    Serial.print("nvs token minted ");
-    Serial.println(otaToken);
+  devicePass = prefs.getString("pw", "");
+  prefs.remove("tok");
+  if (!devicePass.length()) {
+    Serial.println("no password set. LAN form or serial: pass <password>");
   } else {
-    Serial.println("nvs token present");
+    Serial.println("password set");
   }
   prefs.end();
 
@@ -750,11 +817,11 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("smoker-ble-relay boot");
-  Serial.println("fw notify-subscribe");
+  Serial.println("fw notify-subscribe lan-password");
 
   startWifi();
 
-  const char *hdrs[] = {"X-Relay-Token", "Content-Type"};
+  const char *hdrs[] = {"X-Relay-Password", "Content-Type"};
   server.collectHeaders(hdrs, 2);
   server.on("/", HTTP_GET, handleRoot);
   server.on("/wifi", HTTP_POST, handleWifiPost);
@@ -783,6 +850,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  pollSerial();
   if (otaBusy) {
     return;
   }
