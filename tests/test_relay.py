@@ -216,3 +216,24 @@ class RelayHealthTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class RelayTelemetryTests(unittest.TestCase):
+    def test_health_maps_rssi_and_err(self):
+        tel = H['parse_relay_telemetry']({
+            'ok': True, 'haveReading': False, 'ap': '', 'sta': '192.168.1.118',
+            'wifiRssi': -66, 'bleRssi': -70, 'lastErr': 'ascii skip (not NXE temps)',
+        })
+        self.assertEqual(tel['wifiRssi'], -66)
+        self.assertEqual(tel['bleRssi'], -70)
+        self.assertEqual(tel['lastErr'], 'ascii skip (not NXE temps)')
+
+    def test_health_rejects_junk_rssi_and_ok_false(self):
+        self.assertIsNone(H['parse_relay_telemetry']({'ok': False, 'wifiRssi': -50}))
+        self.assertIsNone(H['parse_relay_telemetry']({'ok': True, 'foo': 1}))
+        tel = H['parse_relay_telemetry']({
+            'ok': True, 'sta': '192.168.1.118', 'wifiRssi': 5, 'bleRssi': True,
+        })
+        self.assertIsNone(tel['wifiRssi'])
+        self.assertIsNone(tel['bleRssi'])
+        self.assertEqual(tel['lastErr'], '')
