@@ -96,13 +96,17 @@ class Firmware(unittest.TestCase):
         self.assertIn('name=name', FIRMWARE)  # SoftAP form field
 
     def test_softap_form_has_relay_name(self):
-        self.assertIn('Relay name', FIRMWARE)
+        self.assertIn('<label>Name</label>', FIRMWARE)
         self.assertIn('prefs.putString("name"', FIRMWARE)
+        self.assertIn('action=/setpass', FIRMWARE)
+        self.assertIn('action=/unlock', FIRMWARE)
+        self.assertIn('sessionOk', FIRMWARE)
 
     def test_sta_wifi_form_not_on_lan(self):
         self.assertIn('wifi form is SoftAP only', FIRMWARE)
-        self.assertIn('HTTP_POST, handleNamePost', FIRMWARE)
-        self.assertIn('action=/name', FIRMWARE)
+        self.assertIn('HTTP_POST, handleSave', FIRMWARE)
+        self.assertIn('action=/save', FIRMWARE)
+        self.assertNotIn('OTA password', FIRMWARE)
 
     def test_health_and_reading_stay_unauth(self):
         health = FIRMWARE.split('static void handleHealth', 1)[1].split('static void', 1)[0]
@@ -143,7 +147,7 @@ class Firmware(unittest.TestCase):
         self.assertNotIn('ArduinoOTA', FIRMWARE)
         self.assertNotIn('3232', FIRMWARE)
         ota = FIRMWARE.split('static void handleOtaPost', 1)[1].split('static void', 1)[0]
-        self.assertIn('headerTokenOk', ota)
+        self.assertIn('otaAuthOk', ota)
 
     def test_cook_ui_telemetry_lives_in_log_strip(self):
         self.assertNotIn('id="chipBtWrap"', HTML)
@@ -160,8 +164,14 @@ class Firmware(unittest.TestCase):
         self.assertIn("last['wifiRssi']", SERVER)
         self.assertIn("last['relay_sta']", SERVER)
         self.assertIn("last['interval']", SERVER)
-        name = FIRMWARE.split('static void handleNamePost', 1)[1].split('static void', 1)[0]
-        self.assertIn('requireAuth', name)
+        save = FIRMWARE.split('static void handleSave', 1)[1].split('static void', 1)[0]
+        self.assertIn('sessionOk', save)
+        self.assertIn('BT to smoker', FIRMWARE)
+        self.assertIn('Connected', FIRMWARE)
+        page = FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0]
+        self.assertNotIn('192.168.', page)
+        self.assertNotIn('smoker ', page.split('BT to smoker', 1)[0])
+        self.assertNotIn('setPoint', FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0])
 
 
 if __name__ == '__main__':

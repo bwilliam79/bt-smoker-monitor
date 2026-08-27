@@ -36,6 +36,7 @@ static String lastErr = "";
 static String lastPacketChar = "";
 static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
+static String sessionSid = "";
 static int lastRssi = 0;
 static bool haveReading = false;
 static bool scanning = false;
@@ -475,6 +476,10 @@ static bool connectAndSubscribe() {
 
 static void onScanDone(NimBLEScanResults) { scanning = false; }
 
+// Soft-pause only. Never tear down the NimBLE stack from inside a WebServer
+// upload callback — that can wedge the sole HTTP task (TCP accept, 0-byte
+// replies / RST) while ICMP still answers. Full BLE teardown waits for reboot
+// after a successful OTA.
 static void pauseBle() {
   otaBusy = true;
   scanning = false;
@@ -485,12 +490,17 @@ static void pauseBle() {
   if (bleClient && bleClient->isConnected()) {
     bleClient->disconnect();
   }
+  bleClient = nullptr;
   if (bleInited) {
     NimBLEDevice::getScan()->stop();
-    NimBLEDevice::deinit(true);
-    bleClient = nullptr;
-    bleInited = false;
   }
+}
+
+static void otaFailCleanup() {
+  Update.abort();
+  otaBusy = false;
+  otaAuthed = false;
+  otaGot = 0;
 }
 
 static bool headerTokenOk() {
@@ -515,8 +525,46 @@ static bool tokenOk() {
   return headerTokenOk() || formTokenOk();
 }
 
+static bool sessionOk() {
+  if (!sessionSid.length()) {
+    return false;
+  }
+  String c = server.header("Cookie");
+  int i = c.indexOf("sid=");
+  if (i < 0) {
+    return false;
+  }
+  String got = c.substring(i + 4);
+  int sc = got.indexOf(';');
+  if (sc >= 0) {
+    got = got.substring(0, sc);
+  }
+  got.trim();
+  return got == sessionSid;
+}
+
+static void mintSession() {
+  char buf[17];
+  snprintf(buf, sizeof(buf), "%08x%08x", (unsigned)esp_random(), (unsigned)esp_random());
+  sessionSid = buf;
+}
+
+static void addSessionCookie() {
+  mintSession();
+  server.sendHeader("Set-Cookie", "sid=" + sessionSid + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400");
+}
+
+static void clearSessionCookie() {
+  sessionSid = "";
+  server.sendHeader("Set-Cookie", "sid=; Path=/; HttpOnly; Max-Age=0");
+}
+
+static bool otaAuthOk() {
+  return headerTokenOk() || sessionOk();
+}
+
 static bool requireAuth() {
-  if (tokenOk()) {
+  if (tokenOk() || sessionOk()) {
     return true;
   }
   server.send(401, "application/json", "{\"ok\":false,\"error\":\"auth\"}");
@@ -551,82 +599,76 @@ static void handleHealth() {
   server.send(200, "application/json", buf);
 }
 
-static void sendSoftApForm(const char *flash) {
+static void sendPage(const char *flash) {
+  bool hasPass = devicePass.length() > 0;
+  bool in = hasPass && sessionOk();
+  int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  bool bleOn = bleClient && bleClient->isConnected();
   String html;
+  html.reserve(4500);
   html += "<!doctype html><html><head><meta charset=utf-8>";
   html += "<meta name=viewport content='width=device-width,initial-scale=1'>";
   html += "<title>";
   html += relayName;
-  html += "</title></head><body>";
-  html += "<h1>";
+  html += "</title><style>";
+  html += "body{margin:0;background:#1a1612;color:#e8dcc8;font:16px system-ui,sans-serif}";
+  html += ".w{max-width:28rem;margin:0 auto;padding:20px}";
+  html += "h1{font-size:1.15rem;color:#c4a574;font-weight:600;margin:0 0 12px}";
+  html += ".tel{display:flex;flex-wrap:wrap;gap:10px 16px;background:#241e18;border:1px solid #3d3428;border-radius:8px;padding:12px 14px;margin:0 0 16px;color:#e8dcc8}";
+  html += ".dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#6b5e4e;margin-right:6px;vertical-align:middle}";
+  html += ".dot.on{background:#5a8f5a}";
+  html += "h2{font-size:1rem;color:#e8dcc8;font-weight:600;margin:8px 0 4px}";
+  html += "label{display:block;margin:14px 0 6px;color:#c4a574;font-size:.85rem}";
+  html += "input,button{font:16px system-ui,sans-serif;width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #3d3428;background:#120f0c;color:#e8dcc8}";
+  html += "button{background:#3d2e18;color:#e4c48a;border-color:#6b5428;margin-top:14px;font-weight:600}";
+  html += ".row{display:flex;gap:10px}.row button{flex:1}";
+  html += ".msg{color:#c4a574;margin:0 0 12px}";
+  html += "</style></head><body><div class=w><h1>";
   html += relayName;
-  html += "</h1>";
-  html += "<p>SoftAP. House Wi-Fi, relay name, and device password stay on this board (not git). No default password. GET telemetry stays open.</p>";
+  html += "</h1><div class=tel>";
+  html += bleOn ? "<span><span class='dot on'></span>Connected</span>" : "<span><span class=dot></span>Not connected</span>";
+  html += "<span>Wi-Fi ";
+  html += (WiFi.status() == WL_CONNECTED) ? (String(wifiRssi) + " dBm") : String("—");
+  html += "</span><span>BT to smoker ";
+  html += bleOn ? (String(lastRssi) + " dBm") : String("—");
+  html += "</span></div>";
   if (flash && flash[0]) {
-    html += "<p>";
+    html += "<p class=msg>";
     html += flash;
     html += "</p>";
   }
-  html += "<p>STA status: ";
-  html += staStatus;
-  html += "</p>";
-  html += "<form method=POST action=/wifi>";
-  html += "<p>Relay name<br><input name=name maxlength=32 value='";
-  html += relayName;
-  html += "'></p>";
-  html += "<p>House SSID<br><input name=ssid value='";
-  html += staSsid;
-  html += "'></p>";
-  html += "<p>Password<br><input name=pass type=password></p>";
-  html += "<p>Device password (8+ chars, blank keeps current)<br><input name=password type=password maxlength=64></p>";
-  html += "<p><button type=submit>Save / join house Wi-Fi</button></p>";
-  html += "</form></body></html>";
-  server.send(200, "text/html", html);
-}
-
-static void sendStaForm(const char *flash) {
-  String html;
-  html += "<!doctype html><html><head><meta charset=utf-8>";
-  html += "<meta name=viewport content='width=device-width,initial-scale=1'>";
-  html += "<title>";
-  html += relayName;
-  html += "</title></head><body>";
-  html += "<h1>";
-  html += relayName;
-  html += "</h1>";
-  html += "<p>LAN rename and device password. House Wi-Fi is not accepted on this page. GET /health /api/reading /api/gatt stay open. POST /ota needs X-Relay-Password.</p>";
-  if (flash && flash[0]) {
-    html += "<p>";
-    html += flash;
-    html += "</p>";
+  if (!hasPass) {
+    html += "<h2>Set password</h2><form method=POST action=/setpass>";
+    html += "<label>New password</label><input name=newpass type=password maxlength=64 autocomplete=new-password>";
+    html += "<label>Again</label><input name=again type=password maxlength=64 autocomplete=new-password>";
+    html += "<button type=submit>Set password</button></form>";
+  } else if (!in) {
+    html += "<h2>Unlock config</h2><form method=POST action=/unlock>";
+    html += "<label>Password</label><input name=password type=password maxlength=64 autocomplete=current-password>";
+    html += "<button type=submit>Unlock</button></form>";
+  } else {
+    html += "<form method=POST action=/save>";
+    html += "<label>Name</label><input name=name maxlength=32 value='";
+    html += relayName;
+    html += "'>";
+    html += "<label>Wi-Fi SSID</label><input name=ssid maxlength=32 value='";
+    html += staSsid;
+    html += "' autocomplete=off>";
+    html += "<label>Wi-Fi password</label><input name=pass type=password maxlength=64 autocomplete=new-password>";
+    html += "<label>New device password</label><input name=newpass type=password maxlength=64 autocomplete=new-password>";
+    html += "<label>Again</label><input name=again type=password maxlength=64 autocomplete=new-password>";
+    html += "<div class=row><button type=submit>Save</button></div></form>";
+    html += "<form method=POST action=/lock><button type=submit>Lock</button></form>";
+    html += "<form id=otaForm><label>OTA firmware</label><input name=firmware type=file accept=.bin>";
+    html += "<button type=submit>Upload firmware</button></form>";
+    html += "<script>document.getElementById('otaForm').addEventListener('submit',async function(e){e.preventDefault();var f=e.target.firmware.files[0];if(!f){return;}var fd=new FormData();fd.append('firmware',f);var r=await fetch('/ota',{method:'POST',credentials:'same-origin',body:fd});alert(await r.text());if(r.ok){setTimeout(function(){location.reload();},1500);}});</script>";
   }
-  html += "<p>LAN IP: ";
-  html += WiFi.localIP().toString();
-  html += "</p>";
-  html += "<form method=POST action=/name>";
-  html += "<p>Relay name<br><input name=name maxlength=32 value='";
-  html += relayName;
-  html += "'></p>";
-  html += "<p>Device password (required if already set; first time this sets it)<br><input name=password type=password maxlength=64></p>";
-  html += "<p>New password (optional)<br><input name=newpass type=password maxlength=64></p>";
-  html += "<p><button type=submit>Save</button></p>";
-  html += "</form>";
-  html += "<form id=otaForm>";
-  html += "<p>OTA firmware<br><input name=firmware type=file accept=.bin></p>";
-  html += "<p>OTA password<br><input id=otaPass type=password maxlength=64></p>";
-  html += "<p><button type=submit>Upload firmware</button></p>";
-  html += "</form>";
-  html += "<script>document.getElementById('otaForm').addEventListener('submit',async function(e){e.preventDefault();var pw=document.getElementById('otaPass').value;var f=e.target.firmware.files[0];if(!f){alert('pick a .bin');return;}var fd=new FormData();fd.append('firmware',f);var r=await fetch('/ota',{method:'POST',headers:{'X-Relay-Password':pw},body:fd});alert(await r.text());if(r.ok){setTimeout(function(){location.reload();},2000);}});</script>";
-  html += "</body></html>";
+  html += "</div></body></html>";
   server.send(200, "text/html", html);
 }
 
 static void handleRoot() {
-  if (isSoftAp()) {
-    sendSoftApForm("");
-  } else {
-    sendStaForm("");
-  }
+  sendPage("");
 }
 
 static void handleCaptive() {
@@ -665,66 +707,88 @@ static void trySta(const String &ssid, const String &pass) {
   }
 }
 
-static void handleWifiPost() {
-  if (!isSoftAp()) {
-    server.send(404, "application/json", "{\"ok\":false,\"error\":\"wifi form is SoftAP only\"}");
+static void handleSetPass() {
+  if (devicePass.length()) {
+    sendPage("Password already set. Unlock.");
     return;
   }
-  String ssid = server.arg("ssid");
-  String pass = server.arg("pass");
+  String a = server.arg("newpass");
+  String b = server.arg("again");
+  a.trim();
+  b.trim();
+  if (a != b || !saveDevicePass(a)) {
+    sendPage("Passwords must match, 8+ printable.");
+    return;
+  }
+  addSessionCookie();
+  sendPage("Password saved.");
+}
+
+static void handleUnlock() {
+  if (!devicePass.length()) {
+    server.sendHeader("Location", "/", true);
+    server.send(302, "text/plain", "");
+    return;
+  }
+  if (!formTokenOk()) {
+    sendPage("Unlock failed.");
+    return;
+  }
+  addSessionCookie();
+  sendPage("Unlocked.");
+}
+
+static void handleLock() {
+  clearSessionCookie();
+  sendPage("Locked.");
+}
+
+static void handleSave() {
+  if (!sessionOk()) {
+    sendPage("Unlock first.");
+    return;
+  }
   String name = sanitizeRelayName(server.arg("name"));
-  String pw = server.arg("password");
-  pw.trim();
+  String ssid = server.arg("ssid");
+  String wpass = server.arg("pass");
+  String a = server.arg("newpass");
+  String b = server.arg("again");
   ssid.trim();
+  a.trim();
+  b.trim();
   prefs.begin("relay", false);
   prefs.putString("name", name);
   relayName = name;
   prefs.end();
-  if (pw.length()) {
-    if (!saveDevicePass(pw)) {
-      sendSoftApForm("Password rejected (8-64 printable).");
+  if (a.length() || b.length()) {
+    if (a != b || !saveDevicePass(a)) {
+      sendPage("New passwords must match, 8+ printable.");
       return;
     }
   }
-  prefs.begin("relay", false);
-  if (!ssid.length()) {
+  if (ssid.length()) {
+    prefs.begin("relay", false);
+    prefs.putString("ssid", ssid);
+    if (wpass.length()) {
+      prefs.putString("pass", wpass);
+    } else {
+      wpass = prefs.getString("pass", "");
+    }
     prefs.end();
-    sendSoftApForm("Relay name saved. SSID required to join house Wi-Fi.");
+    staSsid = ssid;
+    trySta(ssid, wpass);
+    sendPage(WiFi.status() == WL_CONNECTED ? "Saved." : "Saved, but Wi-Fi join failed.");
     return;
   }
-  prefs.putString("ssid", ssid);
-  prefs.putString("pass", pass);
-  prefs.end();
-  staSsid = ssid;
-  trySta(ssid, pass);
-  sendSoftApForm(WiFi.status() == WL_CONNECTED ? "Saved. Joined house Wi-Fi." : "Saved, but join failed. Recheck the password.");
+  sendPage("Saved.");
+}
+
+static void handleWifiPost() {
+  server.send(404, "application/json", "{\"ok\":false,\"error\":\"wifi form is SoftAP only\"}");
 }
 
 static void handleNamePost() {
-  String pw = server.arg("password");
-  pw.trim();
-  String newpass = server.arg("newpass");
-  newpass.trim();
-  if (!devicePass.length()) {
-    if (!saveDevicePass(pw)) {
-      sendStaForm("Set a device password first (8-64 printable). No default.");
-      return;
-    }
-  } else if (!requireAuth()) {
-    return;
-  }
-  if (newpass.length()) {
-    if (!saveDevicePass(newpass)) {
-      sendStaForm("New password rejected (8-64 printable).");
-      return;
-    }
-  }
-  String name = sanitizeRelayName(server.arg("name"));
-  prefs.begin("relay", false);
-  prefs.putString("name", name);
-  prefs.end();
-  relayName = name;
-  sendStaForm("Saved.");
+  server.send(404, "application/json", "{\"ok\":false,\"error\":\"use /save\"}");
 }
 
 static void handleOtaUpload() {
@@ -736,7 +800,7 @@ static void handleOtaUpload() {
   }
   HTTPUpload &up = server.upload();
   if (up.status == UPLOAD_FILE_START) {
-    otaAuthed = headerTokenOk();
+    otaAuthed = otaAuthOk();
     otaGot = 0;
     if (!otaAuthed) {
       return;
@@ -744,6 +808,8 @@ static void handleOtaUpload() {
     pauseBle();
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
       Update.printError(Serial);
+      otaFailCleanup();
+      return;
     }
     Serial.println("ota start");
   } else if (up.status == UPLOAD_FILE_WRITE) {
@@ -752,12 +818,15 @@ static void handleOtaUpload() {
     }
     otaGot += up.currentSize;
     if (otaGot > OTA_MAX) {
-      Update.abort();
+      otaFailCleanup();
       return;
     }
     if (Update.write(up.buf, up.currentSize) != up.currentSize) {
       Update.printError(Serial);
+      otaFailCleanup();
+      return;
     }
+    yield();
   } else if (up.status == UPLOAD_FILE_END) {
     if (!otaAuthed) {
       return;
@@ -766,13 +835,17 @@ static void handleOtaUpload() {
       Serial.printf("ota ok %u\n", (unsigned)up.totalSize);
     } else {
       Update.printError(Serial);
+      otaFailCleanup();
     }
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    Serial.println("ota aborted");
+    otaFailCleanup();
   }
 }
 
 static void handleOtaPost() {
-  // Header only so a prior POST /name token arg cannot authorize OTA.
-  if (!headerTokenOk()) {
+  if (!otaAuthOk()) {
+    // Never began flash (auth fails before pauseBle). Clear flags only.
     server.send(401, "application/json", "{\"ok\":false,\"error\":\"auth\"}");
     otaBusy = false;
     otaAuthed = false;
@@ -780,8 +853,7 @@ static void handleOtaPost() {
   }
   if (!otaAuthed || !Update.isFinished() || Update.hasError()) {
     server.send(400, "application/json", "{\"ok\":false,\"error\":\"ota failed\"}");
-    otaBusy = false;
-    otaAuthed = false;
+    otaFailCleanup();
     return;
   }
   server.send(200, "application/json", "{\"ok\":true}");
@@ -817,13 +889,17 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println("smoker-ble-relay boot");
-  Serial.println("fw notify-subscribe lan-password");
+  Serial.println("fw notify-subscribe lan-ui ota-soft");
 
   startWifi();
 
-  const char *hdrs[] = {"X-Relay-Password", "Content-Type"};
-  server.collectHeaders(hdrs, 2);
+  const char *hdrs[] = {"X-Relay-Password", "Content-Type", "Cookie"};
+  server.collectHeaders(hdrs, 3);
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/setpass", HTTP_POST, handleSetPass);
+  server.on("/unlock", HTTP_POST, handleUnlock);
+  server.on("/lock", HTTP_POST, handleLock);
+  server.on("/save", HTTP_POST, handleSave);
   server.on("/wifi", HTTP_POST, handleWifiPost);
   server.on("/name", HTTP_POST, handleNamePost);
   server.on("/ota", HTTP_POST, handleOtaPost, handleOtaUpload);
