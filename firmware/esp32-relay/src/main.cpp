@@ -38,9 +38,8 @@ static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
 static String sessionSid = "";
 static int lastRssi = 0;
-static const char *FW_VERSION = "v1.4.1";
+static const char *FW_VERSION = "v1.4.2";
 static bool haveReading = false;
-static bool holdBle = false;
 static bool scanning = false;
 static bool haveTarget = false;
 static bool otaBusy = false;
@@ -152,25 +151,6 @@ static void pollSerial() {
 }
 
 static void setLastErr(const char *s) { lastErr = s; }
-
-static void persistHold(bool v) {
-  holdBle = v;
-  prefs.begin("relay", false);
-  prefs.putBool("holdBle", v);
-  prefs.end();
-  if (v) {
-    scanning = false;
-    haveTarget = false;
-    if (bleClient && bleClient->isConnected()) {
-      bleClient->disconnect();
-    }
-    if (bleInited) {
-      NimBLEDevice::getScan()->stop();
-    }
-  } else {
-    lastPollMs = 0;
-  }
-}
 
 static bool looksAscii(const uint8_t *data, size_t len) {
   if (!len) {
@@ -408,7 +388,7 @@ static bool pollOnce() {
   // BlueZ-style: connect, READ bb01 + cc01, disconnect. No CCCD, no persist.
   // NXE treats a subscribed staying-central as the controller; dropping it
   // puts the grill into shutdown. Never write setpoints.
-  if (!haveTarget || otaBusy || holdBle) {
+  if (!haveTarget || otaBusy) {
     return false;
   }
   if (!bleClient) {
@@ -574,12 +554,11 @@ static void handleHealth() {
   char buf[520];
   int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   snprintf(buf, sizeof(buf),
-           "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"bleHeld\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
+           "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
            "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\",\"packetChar\":\"%s\"}",
            nameEsc.c_str(),
            bleClient && bleClient->isConnected() ? "true" : "false",
            haveReading ? "true" : "false",
-           holdBle ? "true" : "false",
            ap.c_str(),
            sta.c_str(),
            wifiRssi, lastRssi, errEsc.c_str(), charEsc.c_str());
@@ -622,9 +601,7 @@ static void sendPage(const char *flash, bool forceIn = false) {
   html += relayName;
   html += "</h1><div class=tel>";
   // Connected = cached NXE packet path, not merely a BLE ACL link.
-  if (holdBle) {
-    html += "<span><span class=dot></span>BLE held</span>";
-  } else if (haveReading) {
+  if (haveReading) {
     html += "<span><span class='dot on'></span>Connected</span>";
   } else if (bleOn) {
     html += "<span><span class=dot></span>Waiting for packet</span>";
@@ -662,11 +639,6 @@ static void sendPage(const char *flash, bool forceIn = false) {
     html += "<label>New device password</label><input name=newpass type=password maxlength=64 autocomplete=new-password>";
     html += "<label>Re-enter new password</label><input name=again type=password maxlength=64 autocomplete=new-password>";
     html += "<div class=row><button type=submit>Save</button></div></form>";
-    if (holdBle) {
-      html += "<form method=POST action=/ble/resume><button type=submit>Resume BLE</button></form>";
-    } else {
-      html += "<form method=POST action=/ble/hold><button type=submit>Hold BLE</button></form>";
-    }
     html += "<form method=POST action=/lock><button type=submit>Lock</button></form>";
     html += "<form id=otaForm><label>OTA firmware</label><input name=firmware type=file accept=.bin>";
     html += "<button type=submit>Upload firmware</button></form>";
@@ -751,24 +723,6 @@ static void handleUnlock() {
 
 static void handleLock() {
   clearSessionCookie();
-  redirectHome();
-}
-
-static void handleBleResume() {
-  if (!sessionOk() && !headerTokenOk()) {
-    sendPage("Unlock first.");
-    return;
-  }
-  persistHold(false);
-  redirectHome();
-}
-
-static void handleBleHold() {
-  if (!sessionOk() && !headerTokenOk()) {
-    sendPage("Unlock first.");
-    return;
-  }
-  persistHold(true);
   redirectHome();
 }
 
@@ -887,7 +841,6 @@ static void handleOtaPost() {
   }
   server.send(200, "application/json", "{\"ok\":true}");
   prefs.begin("relay", false);
-  prefs.putBool("holdBle", true);
   prefs.end();
   delay(200);
   ESP.restart();
@@ -899,13 +852,8 @@ static void startWifi() {
   staSsid = prefs.getString("ssid", "");
   String pass = prefs.getString("pass", "");
   devicePass = prefs.getString("pw", "");
-  holdBle = prefs.getBool("holdBle", false);
-  String seen = prefs.getString("fwSeen", "");
-  if (seen != String(FW_VERSION)) {
-    holdBle = true;
-    prefs.putBool("holdBle", true);
-    prefs.putString("fwSeen", FW_VERSION);
-  }
+  prefs.remove("holdBle");
+  prefs.remove("fwSeen");
   prefs.remove("tok");
   if (!devicePass.length()) {
     Serial.println("no password set. LAN form or serial: pass <password>");
@@ -943,8 +891,6 @@ void setup() {
   server.on("/wifi", HTTP_POST, handleWifiPost);
   server.on("/name", HTTP_POST, handleNamePost);
   server.on("/ota", HTTP_POST, handleOtaPost, handleOtaUpload);
-  server.on("/ble/resume", HTTP_POST, handleBleResume);
-  server.on("/ble/hold", HTTP_POST, handleBleHold);
   server.on("/api/reading", HTTP_GET, handleReading);
   server.on("/api/gatt", HTTP_GET, handleGatt);
   server.on("/health", HTTP_GET, handleHealth);
@@ -976,12 +922,6 @@ void loop() {
     return;
   }
 
-  if (holdBle) {
-    if (bleClient && bleClient->isConnected()) {
-      bleClient->disconnect();
-    }
-    return;
-  }
 
   // Never remain the NXE controller. Disconnect leftovers, then poll.
   if (bleClient && bleClient->isConnected()) {
