@@ -2,7 +2,9 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <Update.h>
 #include <NimBLEDevice.h>
+#include <esp_system.h>
 
 #ifndef RELAY_AP_PASS
 #include "secrets.h"
@@ -22,15 +24,23 @@ static NimBLEUUID CHAR_IP("0000bb01-0000-1000-8000-00805f9b34fb");
 #ifndef RELAY_HTTP_PORT
 #define RELAY_HTTP_PORT 80
 #endif
+static const size_t OTA_MAX = 1572864;
+
 static WebServer server(RELAY_HTTP_PORT);
 static Preferences prefs;
 static String lastJson = "{\"ok\":false}";
 static String lastName = "";
 static String lastIp = "";
+static String lastErr = "";
+static String otaToken = "";
 static int lastRssi = 0;
 static bool haveReading = false;
 static bool scanning = false;
 static bool haveTarget = false;
+static bool otaBusy = false;
+static bool otaAuthed = false;
+static size_t otaGot = 0;
+static bool bleInited = false;
 static NimBLEAddress targetAddr;
 
 static NimBLEClient *bleClient = nullptr;
@@ -44,6 +54,11 @@ static uint32_t bleReadyMs = 0;
 
 static uint16_t u16le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static bool isSoftAp() {
+  wifi_mode_t m = WiFi.getMode();
+  return m == WIFI_AP || m == WIFI_AP_STA;
 }
 
 static String sanitizeRelayName(String s) {
@@ -76,6 +91,14 @@ static String jsonEscape(const String &s) {
   return out;
 }
 
+static String makeToken() {
+  char buf[17];
+  snprintf(buf, sizeof(buf), "%08x%08x", (unsigned)esp_random(), (unsigned)esp_random());
+  return String(buf);
+}
+
+static void setLastErr(const char *s) { lastErr = s; }
+
 static void publish(const uint8_t *data, size_t len) {
   Serial.printf("pkt len=%u hex=", (unsigned)len);
   for (size_t i = 0; i < len && i < 24; i++) {
@@ -83,6 +106,7 @@ static void publish(const uint8_t *data, size_t len) {
   }
   Serial.println();
   if (len < 8) {
+    setLastErr("packet too short");
     Serial.printf("packet too short len=%u\n", (unsigned)len);
     return;
   }
@@ -98,6 +122,7 @@ static void publish(const uint8_t *data, size_t len) {
     }
   }
   if (printable) {
+    setLastErr("ascii skip (not NXE temps)");
     Serial.println("skip ascii characteristic (not NXE temps)");
     return;
   }
@@ -107,22 +132,26 @@ static void publish(const uint8_t *data, size_t len) {
   uint16_t pt1 = (len >= 12) ? u16le(data + 10) : 0;
   uint16_t p0 = (len >= 18) ? u16le(data + 16) : ((len >= 14) ? u16le(data + 12) : 0);
   uint16_t p1 = (len >= 20) ? u16le(data + 18) : ((len >= 16) ? u16le(data + 14) : 0);
-  char buf[320];
+  char buf[360];
   snprintf(
       buf, sizeof(buf),
       "{\"ok\":true,\"setPoint\":%u,\"grill\":%u,\"probeTargets\":[%u,%u],"
-      "\"probes\":[%u,%u],\"rssi\":%d,\"name\":\"%s\",\"smokerIp\":\"%s\",\"len\":%u}",
-      setPoint, grill, pt0, pt1, p0, p1, lastRssi, lastName.c_str(), lastIp.c_str(),
-      (unsigned)len);
+      "\"probes\":[%u,%u],\"rssi\":%d,\"wifiRssi\":%d,\"name\":\"%s\",\"smokerIp\":\"%s\",\"len\":%u}",
+      setPoint, grill, pt0, pt1, p0, p1, lastRssi,
+      (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0,
+      lastName.c_str(), lastIp.c_str(), (unsigned)len);
   lastJson = buf;
   haveReading = true;
+  setLastErr("");
   Serial.printf("reading ok grill=%u set=%u len=%u\n", grill, setPoint, (unsigned)len);
 }
 
 class ScanCallbacks : public NimBLEAdvertisedDeviceCallbacks {
  public:
   void onResult(NimBLEAdvertisedDevice *adv) override {
-    // Do not stop the scan from this callback — NimBLE 1.4 LoadProhibited on ESP32.
+    if (!adv || otaBusy) {
+      return;
+    }
     std::string name = adv->getName();
     if (name.rfind(TARGET_PREFIX, 0) != 0) {
       return;
@@ -157,7 +186,7 @@ static NimBLERemoteCharacteristic *findChar(NimBLEClient *client, const NimBLEUU
 }
 
 static bool connectAndRead() {
-  if (!haveTarget) {
+  if (!haveTarget || otaBusy) {
     return false;
   }
   if (!bleClient) {
@@ -170,12 +199,14 @@ static bool connectAndRead() {
   }
   tempChar = nullptr;
   if (!bleClient->connect(targetAddr, false)) {
+    setLastErr("connect failed");
     Serial.println("connect failed");
     return false;
   }
   lastRssi = bleClient->getRssi();
   tempChar = findChar(bleClient, CHAR_TEMP);
   if (!tempChar || !tempChar->canRead()) {
+    setLastErr("no temp characteristic");
     Serial.println("no temp characteristic");
     bleClient->disconnect();
     tempChar = nullptr;
@@ -197,35 +228,78 @@ static bool connectAndRead() {
   return haveReading;
 }
 
-static void onScanDone(NimBLEScanResults) {
+static void onScanDone(NimBLEScanResults) { scanning = false; }
+
+static void pauseBle() {
+  otaBusy = true;
   scanning = false;
+  haveTarget = false;
+  tempChar = nullptr;
+  if (bleClient && bleClient->isConnected()) {
+    bleClient->disconnect();
+  }
+  if (bleInited) {
+    NimBLEDevice::getScan()->stop();
+    NimBLEDevice::deinit(true);
+    bleClient = nullptr;
+    bleInited = false;
+  }
+}
+
+static bool headerTokenOk() {
+  if (!otaToken.length()) {
+    return false;
+  }
+  String t = server.header("X-Relay-Token");
+  t.trim();
+  return t.length() > 0 && t == otaToken;
+}
+
+static bool formTokenOk() {
+  if (!otaToken.length()) {
+    return false;
+  }
+  String t = server.arg("token");
+  t.trim();
+  return t.length() > 0 && t == otaToken;
+}
+
+static bool tokenOk() {
+  return headerTokenOk() || formTokenOk();
+}
+
+static bool requireAuth() {
+  if (tokenOk()) {
+    return true;
+  }
+  server.send(401, "application/json", "{\"ok\":false,\"error\":\"auth\"}");
+  return false;
 }
 
 static void handleReading() {
   server.send(haveReading ? 200 : 503, "application/json", lastJson);
 }
 
-static String radioIp() {
-  if (WiFi.status() == WL_CONNECTED) {
-    return WiFi.localIP().toString();
-  }
-  return WiFi.softAPIP().toString();
-}
-
 static void handleHealth() {
   String nameEsc = jsonEscape(relayName);
-  char buf[320];
+  String errEsc = jsonEscape(lastErr);
+  String ap = isSoftAp() ? WiFi.softAPIP().toString() : "";
+  String sta = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
+  char buf[420];
+  int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   snprintf(buf, sizeof(buf),
-           "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\"}",
+           "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
+           "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\"}",
            nameEsc.c_str(),
            bleClient && bleClient->isConnected() ? "true" : "false",
            haveReading ? "true" : "false",
-           WiFi.softAPIP().toString().c_str(),
-           WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "");
+           ap.c_str(),
+           sta.c_str(),
+           wifiRssi, lastRssi, errEsc.c_str());
   server.send(200, "application/json", buf);
 }
 
-static void sendForm(const char *flash) {
+static void sendSoftApForm(const char *flash) {
   String html;
   html += "<!doctype html><html><head><meta charset=utf-8>";
   html += "<meta name=viewport content='width=device-width,initial-scale=1'>";
@@ -235,7 +309,7 @@ static void sendForm(const char *flash) {
   html += "<h1>";
   html += relayName;
   html += "</h1>";
-  html += "<p>SoftAP stays up. House Wi-Fi and relay name are stored on this board only.</p>";
+  html += "<p>SoftAP. House Wi-Fi, relay name, and OTA token stay on this board (not git).</p>";
   if (flash && flash[0]) {
     html += "<p>";
     html += flash;
@@ -243,9 +317,6 @@ static void sendForm(const char *flash) {
   }
   html += "<p>STA status: ";
   html += staStatus;
-  html += "</p>";
-  html += "<p>LAN IP: ";
-  html += (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "(not joined)";
   html += "</p>";
   html += "<form method=POST action=/wifi>";
   html += "<p>Relay name<br><input name=name maxlength=32 value='";
@@ -255,14 +326,54 @@ static void sendForm(const char *flash) {
   html += staSsid;
   html += "'></p>";
   html += "<p>Password<br><input name=pass type=password></p>";
+  html += "<p>OTA token (blank keeps current)<br><input name=token type=password maxlength=32></p>";
   html += "<p><button type=submit>Save / join house Wi-Fi</button></p>";
   html += "</form></body></html>";
   server.send(200, "text/html", html);
 }
 
-static void handleRoot() { sendForm(""); }
+static void sendStaForm(const char *flash) {
+  String html;
+  html += "<!doctype html><html><head><meta charset=utf-8>";
+  html += "<meta name=viewport content='width=device-width,initial-scale=1'>";
+  html += "<title>";
+  html += relayName;
+  html += "</title></head><body>";
+  html += "<h1>";
+  html += relayName;
+  html += "</h1>";
+  html += "<p>LAN rename only. House Wi-Fi is not accepted on this page.</p>";
+  if (flash && flash[0]) {
+    html += "<p>";
+    html += flash;
+    html += "</p>";
+  }
+  html += "<p>LAN IP: ";
+  html += WiFi.localIP().toString();
+  html += "</p>";
+  html += "<form method=POST action=/name>";
+  html += "<p>Relay name<br><input name=name maxlength=32 value='";
+  html += relayName;
+  html += "'></p>";
+  html += "<p>OTA token<br><input name=token type=password maxlength=32></p>";
+  html += "<p><button type=submit>Save name</button></p>";
+  html += "</form></body></html>";
+  server.send(200, "text/html", html);
+}
+
+static void handleRoot() {
+  if (isSoftAp()) {
+    sendSoftApForm("");
+  } else {
+    sendStaForm("");
+  }
+}
 
 static void handleCaptive() {
+  if (!isSoftAp()) {
+    server.send(404, "text/plain", "Not found");
+    return;
+  }
   server.sendHeader("Location", "http://192.168.4.1/", true);
   server.send(302, "text/plain", "");
 }
@@ -287,7 +398,6 @@ static void trySta(const String &ssid, const String &pass) {
     staStatus = "join failed";
     Serial.println("sta join failed");
     WiFi.disconnect(false, false);
-    // Fall back to SoftAP so house Wi-Fi can be re-entered without a serial flash.
     WiFi.mode(WIFI_AP);
     WiFi.softAP(RELAY_AP_SSID, RELAY_AP_PASS);
     Serial.print("ap ip ");
@@ -296,16 +406,26 @@ static void trySta(const String &ssid, const String &pass) {
 }
 
 static void handleWifiPost() {
+  if (!isSoftAp()) {
+    server.send(404, "application/json", "{\"ok\":false,\"error\":\"wifi form is SoftAP only\"}");
+    return;
+  }
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
   String name = sanitizeRelayName(server.arg("name"));
+  String tok = server.arg("token");
+  tok.trim();
   ssid.trim();
   prefs.begin("relay", false);
   prefs.putString("name", name);
   relayName = name;
+  if (tok.length()) {
+    otaToken = tok;
+    prefs.putString("tok", otaToken);
+  }
   if (!ssid.length()) {
     prefs.end();
-    sendForm("Relay name saved. SSID required to join house Wi-Fi.");
+    sendSoftApForm("Relay name saved. SSID required to join house Wi-Fi.");
     return;
   }
   prefs.putString("ssid", ssid);
@@ -313,17 +433,99 @@ static void handleWifiPost() {
   prefs.end();
   staSsid = ssid;
   trySta(ssid, pass);
-  sendForm(WiFi.status() == WL_CONNECTED ? "Saved. Joined house Wi-Fi." : "Saved, but join failed. Recheck the password.");
+  sendSoftApForm(WiFi.status() == WL_CONNECTED ? "Saved. Joined house Wi-Fi." : "Saved, but join failed. Recheck the password.");
+}
+
+static void handleNamePost() {
+  if (!requireAuth()) {
+    return;
+  }
+  String name = sanitizeRelayName(server.arg("name"));
+  prefs.begin("relay", false);
+  prefs.putString("name", name);
+  prefs.end();
+  relayName = name;
+  sendStaForm("Name saved.");
+}
+
+static void handleOtaUpload() {
+  // WebServer calls this ufn as raw() for non-multipart POST. server.upload()
+  // is null then and would RST the TCP client. Only touch HTTPUpload on multipart.
+  String ct = server.header("Content-Type");
+  if (!ct.startsWith("multipart/")) {
+    return;
+  }
+  HTTPUpload &up = server.upload();
+  if (up.status == UPLOAD_FILE_START) {
+    otaAuthed = headerTokenOk();
+    otaGot = 0;
+    if (!otaAuthed) {
+      return;
+    }
+    pauseBle();
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(Serial);
+    }
+    Serial.println("ota start");
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (!otaAuthed) {
+      return;
+    }
+    otaGot += up.currentSize;
+    if (otaGot > OTA_MAX) {
+      Update.abort();
+      return;
+    }
+    if (Update.write(up.buf, up.currentSize) != up.currentSize) {
+      Update.printError(Serial);
+    }
+  } else if (up.status == UPLOAD_FILE_END) {
+    if (!otaAuthed) {
+      return;
+    }
+    if (Update.end(true)) {
+      Serial.printf("ota ok %u\n", (unsigned)up.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+  }
+}
+
+static void handleOtaPost() {
+  // Header only so a prior POST /name token arg cannot authorize OTA.
+  if (!headerTokenOk()) {
+    server.send(401, "application/json", "{\"ok\":false,\"error\":\"auth\"}");
+    otaBusy = false;
+    otaAuthed = false;
+    return;
+  }
+  if (!otaAuthed || !Update.isFinished() || Update.hasError()) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"ota failed\"}");
+    otaBusy = false;
+    otaAuthed = false;
+    return;
+  }
+  server.send(200, "application/json", "{\"ok\":true}");
+  delay(200);
+  ESP.restart();
 }
 
 static void startWifi() {
-  prefs.begin("relay", true);
+  prefs.begin("relay", false);
   relayName = sanitizeRelayName(prefs.getString("name", "smoker-relay"));
   staSsid = prefs.getString("ssid", "");
   String pass = prefs.getString("pass", "");
+  otaToken = prefs.getString("tok", "");
+  if (!otaToken.length()) {
+    otaToken = makeToken();
+    prefs.putString("tok", otaToken);
+    Serial.print("nvs token minted ");
+    Serial.println(otaToken);
+  } else {
+    Serial.println("nvs token present");
+  }
   prefs.end();
 
-  // Never run SoftAP+STA with NimBLE on this ESP32 — modem-sleep abort.
   if (staSsid.length()) {
     trySta(staSsid, pass);
   } else {
@@ -341,8 +543,12 @@ void setup() {
 
   startWifi();
 
+  const char *hdrs[] = {"X-Relay-Token", "Content-Type"};
+  server.collectHeaders(hdrs, 2);
   server.on("/", HTTP_GET, handleRoot);
   server.on("/wifi", HTTP_POST, handleWifiPost);
+  server.on("/name", HTTP_POST, handleNamePost);
+  server.on("/ota", HTTP_POST, handleOtaPost, handleOtaUpload);
   server.on("/api/reading", HTTP_GET, handleReading);
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/generate_204", HTTP_GET, handleCaptive);
@@ -350,8 +556,7 @@ void setup() {
   server.on("/fwlink", HTTP_GET, handleCaptive);
   server.begin();
 
-  // BLE after Wi-Fi is STA-only (or SoftAP-only). Modem sleep stays enabled.
-  delay(1000);
+  delay(1500);
   NimBLEDevice::init("smoker-relay");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   NimBLEScan *scan = NimBLEDevice::getScan();
@@ -359,16 +564,17 @@ void setup() {
   scan->setActiveScan(false);
   scan->setInterval(160);
   scan->setWindow(40);
+  bleInited = true;
+  bleReadyMs = millis() + 2000;
   Serial.println("ble ready");
 }
 
 void loop() {
   server.handleClient();
-
-  if (bleReadyMs == 0) {
-    bleReadyMs = millis() + 1500;
+  if (otaBusy) {
+    return;
   }
-  if (millis() < bleReadyMs) {
+  if (!bleInited || millis() < bleReadyMs) {
     return;
   }
 
