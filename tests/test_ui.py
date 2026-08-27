@@ -45,6 +45,18 @@ class SettingsModal(unittest.TestCase):
         self.assertIn('infoAdapterLabel', HTML)
         self.assertIn("textContent = 'Relay'", HTML)
 
+    def test_relay_discovery_dropdown(self):
+        self.assertIn('id="relaySelect"', HTML)
+        self.assertIn('scanRelays()', HTML)
+        self.assertIn('/api/relays', HTML)
+        self.assertIn('Pick a relay on the LAN', HTML)
+        self.assertIn('Or type IP', HTML)
+        self.assertIn('Secondary fallback when discovery finds nothing', HTML)
+        # Happy path is pick; manual wrap starts hidden.
+        self.assertIn('id="relayManualWrap"', HTML)
+        self.assertIn("manual.style.display = 'none'", HTML)
+        self.assertIn("manual.style.display = ''", HTML)
+
 
 class Defaults(unittest.TestCase):
     def test_default_local(self):
@@ -55,6 +67,11 @@ class Defaults(unittest.TestCase):
         self.assertIn("http://", SERVER)
         self.assertIn('/api/reading', SERVER)
         self.assertIn('def parse_relay_host', SERVER)
+
+    def test_relay_discovery_api(self):
+        self.assertIn("/api/relays", SERVER)
+        self.assertIn('def discover_lan_relays', SERVER)
+        self.assertIn('def parse_relay_health', SERVER)
 
 
 class Firmware(unittest.TestCase):
@@ -71,6 +88,16 @@ class Firmware(unittest.TestCase):
 
     def test_lan_only_bind(self):
         self.assertIn('WebServer server(', FIRMWARE)
+
+    def test_health_includes_name(self):
+        self.assertIn('handleHealth', FIRMWARE)
+        self.assertIn('"name"', FIRMWARE)
+        self.assertIn('relayName', FIRMWARE)
+        self.assertIn('name=name', FIRMWARE)  # SoftAP form field
+
+    def test_softap_form_has_relay_name(self):
+        self.assertIn('Relay name', FIRMWARE)
+        self.assertIn('prefs.putString("name"', FIRMWARE)
 
 
 if __name__ == '__main__':

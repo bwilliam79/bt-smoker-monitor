@@ -88,14 +88,14 @@ Click the **⚙️** icon in the top-right corner to open the settings modal.
 |---------|-------------|
 | **CONNECTION** | **This server** (default) talks to the smoker from the media-server radio. **ESP-32 relay** hides the adapter dropdown; the smoker talks to the ESP-32 instead. Save commits the whole modal. The switch takes effect on the next poll. |
 | **Bluetooth Adapter** | Shown for This server. Select which adapter to use. Lists available adapters with their id and friendly name. Change takes effect on the next scan. |
-| **Relay host** | Shown for ESP-32 relay. LAN address of the board (default `192.168.4.1`). Public / WAN hosts are rejected. |
+| **Relay** | Shown for ESP-32 relay. Scans the LAN for boards that answer `GET /health` and lists **name — IP** (name from the SoftAP Wi-Fi form). Pick one — happy path is pick, not type. If discovery finds nothing, a secondary **Or type IP** field appears. Public / WAN hosts are rejected. |
 | **ntfy.sh Topic** | Push notification topic. Leave blank to disable. |
 
 Settings are saved to `/data/config.json` and persist across container restarts. Missing `connection` means This server, so a live cook keeps using the media-server radio.
 
 ### ESP-32 relay
 
-Optional second radio: an ESP-32 near the smoker serves `GET /api/reading` on its LAN address. Join its SoftAP (`smoker-relay`) and set house Wi-Fi at `http://192.168.4.1/` (saved on the board, not in git). The dashboard still runs in this same app — there is no second instance. Build notes and the LAN-only API are in [`firmware/esp32-relay/README.md`](firmware/esp32-relay/README.md). Do not flash the board during a live cook; the smoker allows one Bluetooth connection.
+Optional second radio: an ESP-32 near the smoker serves `GET /api/reading` on its LAN address. Join its SoftAP (`smoker-relay`) and set a **relay name** plus house Wi-Fi at `http://192.168.4.1/` (saved on the board, not in git). Settings → ESP-32 relay scans the LAN for `/health` and lets you **pick** name + IP; typing an IP is only a fallback when discovery finds nothing. The dashboard still runs in this same app — there is no second instance. Build notes and the LAN-only API are in [`firmware/esp32-relay/README.md`](firmware/esp32-relay/README.md). Do not flash the board during a live cook; the smoker allows one Bluetooth connection.
 
 ---
 
