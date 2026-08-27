@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bt-smoker-v7';
+const CACHE_NAME = 'bt-smoker-v8';
 // Only cache '/' — the server returns index.html content at '/', so caching
 // '/index.html' separately creates a duplicate entry that races on refresh.
 const urlsToCache = [
@@ -60,7 +60,31 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Static assets (icons, manifest, vendored libs): cache-first, refresh in background.
+  // Icons + manifest: network-first so home-screen install does not keep a
+  // stale 401/letter-tile after the public session wall opened these paths.
+  const isInstallAsset = [
+    '/manifest.json',
+    '/icon-192.png',
+    '/icon-512.png',
+    '/icon-maskable-512.png',
+    '/apple-touch-icon.png',
+    '/favicon.svg',
+  ].some(p => url.pathname === p);
+  if (isInstallAsset) {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone))
+            .catch(err => console.warn('cache put failed', err));
+        }
+        return response;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // Other static assets (vendored libs): cache-first, refresh in background.
   event.respondWith(
     caches.match(event.request).then(cached => {
       const networkFetch = fetch(event.request).then(response => {
