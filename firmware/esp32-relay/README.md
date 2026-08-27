@@ -11,10 +11,13 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 | `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`, `char`). `200` when a 20-byte NXE packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
 | `GET /api/gatt` | Cached service/characteristic dump (`r/w/n/i`, last-read hex). No Bluetooth addresses. Unauthenticated LAN diagnostic. |
 | `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`, `packetChar`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
-| `GET /` | SoftAP: house Wi-Fi + name + device password form. STA (LAN IP): name + password (first set is unauthenticated; later needs the current password). House PSK is not accepted on the STA IP. |
+| `GET /` | Charcoal LAN page. Telemetry strip is Connected, Wi-Fi dBm, and BT to smoker dBm only (no IPs, no pit/set/probes). Three states: set password, unlock, logged-in config. Session cookie after set/unlock. |
 | `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional device password to NVS. `404` on STA. |
-| `POST /name` | STA rename / set password. Empty password: this POST sets it (8-64 chars, no default). After that, form `password` or `X-Relay-Password` required. |
-| `POST /ota` | HTTP firmware update. Header `X-Relay-Password` required (minted token is dead). 401 if no password is set. Pauses BLE. Single-slot + USB recovery. Body cap ~1.5 MB. No ArduinoOTA UDP :3232. |
+| `POST /setpass` | First-time password (new+again, 8+). Sets session cookie. |
+| `POST /unlock` | Existing password, one field. Sets session cookie. |
+| `POST /lock` | Clears session. |
+| `POST /save` | Logged-in: name, Wi-Fi SSID, empty Wi-Fi password (never echoed), optional new device password. |
+| `POST /ota` | HTTP firmware update. `X-Relay-Password` **or** session cookie. Soft-pauses BLE (disconnect + stop scan; never tear down NimBLE inside the upload callback — that wedged HTTP while ICMP stayed up). Failed/aborted OTA aborts Update and clears `otaBusy`. USB/SoftAP last resort. Body cap ~1.5 MB. |
 
 The HTTP server binds to the board's own AP/STA address on port 80. It is not a WAN service. The Python app will refuse to poll a non-LAN host.
 
