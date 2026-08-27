@@ -189,6 +189,15 @@ class Firmware(unittest.TestCase):
         self.assertNotIn('setPoint', FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0])
 
 
+class DisconnectNotify(unittest.TestCase):
+    def test_edge_latch_not_initialized_online(self):
+        self.assertIn("def link_transition", SERVER)
+        self.assertIn("'link':          'unknown'", SERVER)
+        self.assertIn('async def _apply_offline', SERVER)
+        self.assertNotIn('smoker_was_offline = False', SERVER)
+        self.assertIn('disconnect alerts armed after the next reconnect', SERVER)
+
+
 if __name__ == '__main__':
     unittest.main()
 
