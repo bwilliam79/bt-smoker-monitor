@@ -171,6 +171,8 @@ class Firmware(unittest.TestCase):
         self.assertIn('sessionOk', save)
         self.assertIn('BT to smoker', FIRMWARE)
         self.assertIn('Connected', FIRMWARE)
+        self.assertIn('Waiting for packet', FIRMWARE)
+        self.assertIn('haveReading', FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0])
         page = FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0]
         self.assertNotIn('192.168.', page)
         self.assertNotIn('smoker ', page.split('BT to smoker', 1)[0])
