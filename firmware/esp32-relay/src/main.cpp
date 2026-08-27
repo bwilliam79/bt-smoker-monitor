@@ -38,7 +38,7 @@ static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
 static String sessionSid = "";
 static int lastRssi = 0;
-static const char *FW_VERSION = "v1.4.2";
+static const char *FW_VERSION = "v1.4.3";
 static bool haveReading = false;
 static bool scanning = false;
 static bool haveTarget = false;
@@ -405,6 +405,7 @@ static bool pollOnce() {
   notifyLen = 0;
   if (!bleClient->connect(targetAddr, false)) {
     setLastErr("connect failed");
+    haveReading = false;
     Serial.println("connect failed");
     return false;
   }
@@ -430,6 +431,10 @@ static bool pollOnce() {
   }
   if (!haveReading) {
     setLastErr("poll read missed packet");
+  }
+  if (!ok) {
+    // Stale cache made cook UI stay Connected while the grill was gone.
+    haveReading = false;
   }
   bleClient->disconnect();
   delay(50);
