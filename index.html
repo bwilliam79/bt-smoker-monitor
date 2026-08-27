@@ -300,14 +300,14 @@
         <button type="button" class="conn-btn selected" id="connLocalBtn" onclick="setConnectionChoice('local')">This server</button>
         <button type="button" class="conn-btn" id="connRelayBtn" onclick="setConnectionChoice('relay')">ESP-32 relay</button>
       </div>
-      <span class="modal-hint" id="connHint">Default. Talks to the smoker from the media-server radio.</span>
+      <span class="modal-hint" id="connHint"></span>
     </div>
     <div class="modal-row" id="adapterRow">
       <label class="modal-label" for="adapterSelect">Bluetooth Adapter</label>
       <select id="adapterSelect" class="modal-input">
         <option value="">Loading adapters…</option>
       </select>
-      <span class="modal-hint">Change takes effect on the next scan.</span>
+      <span class="modal-hint">Select which Bluetooth adapter to use for scanning. Change takes effect on the next scan cycle.</span>
     </div>
     <div class="modal-row" id="relayHostRow" style="display:none">
       <label class="modal-label" for="relayHostInput">Relay host</label>
@@ -543,7 +543,7 @@ function setConnectionChoice(choice) {
   document.getElementById('adapterRow').style.display = relay ? 'none' : '';
   document.getElementById('adapterSelect').disabled = relay;
   document.getElementById('relayHostRow').style.display = relay ? '' : 'none';
-  document.getElementById('connHint').textContent = relay ? 'Talks to the smoker through an ESP-32 BLE relay on the LAN.' : 'Default. Talks to the smoker from the media-server radio.';
+  document.getElementById('connHint').textContent = relay ? 'The smoker talks to the ESP-32.' : '';
 }
 
 async function openSettings() {
