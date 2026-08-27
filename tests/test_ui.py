@@ -172,7 +172,7 @@ class Firmware(unittest.TestCase):
         self.assertIn('sessionOk', save)
         self.assertIn('BT to smoker', FIRMWARE)
         self.assertIn('FW_VERSION', FIRMWARE)
-        self.assertIn('v1.4.0', FIRMWARE)
+        self.assertIn('v1.4.1', FIRMWARE)
         self.assertIn('pollOnce', FIRMWARE)
         self.assertNotIn('subscribeAll', FIRMWARE)
         self.assertIn('Connected', FIRMWARE)
