@@ -113,6 +113,13 @@ class Firmware(unittest.TestCase):
         self.assertIn('bleRssi', FIRMWARE)
         self.assertIn('lastErr', FIRMWARE)
 
+    def test_log_strip_grill_ip_not_relay_sta(self):
+        self.assertIn("n/a (no grill IP yet)", HTML)
+        self.assertIn("infoBtMacWrap", HTML)
+        self.assertIn("grillIp", HTML)
+        self.assertNotIn("n/a (relay; MAC not published)", HTML)
+        self.assertIn("macWrap.style.display = 'none'", HTML)
+
     def test_gatt_dump_and_notify_subscribe(self):
         self.assertIn("/api/gatt", FIRMWARE)
         self.assertIn("subscribeAll", FIRMWARE)
@@ -127,7 +134,11 @@ class Firmware(unittest.TestCase):
         self.assertIn('Update.h', FIRMWARE)
         self.assertIn('OTA_MAX', FIRMWARE)
         self.assertIn('pauseBle', FIRMWARE)
-        self.assertIn('X-Relay-Token', FIRMWARE)
+        self.assertIn('X-Relay-Password', FIRMWARE)
+        self.assertIn('no password set', FIRMWARE)
+        self.assertIn('prefs.remove("tok")', FIRMWARE)
+        self.assertNotIn('nvs token minted', FIRMWARE)
+        self.assertNotIn('X-Relay-Token', FIRMWARE)
         self.assertIn('headerTokenOk', FIRMWARE)
         self.assertNotIn('ArduinoOTA', FIRMWARE)
         self.assertNotIn('3232', FIRMWARE)
@@ -141,7 +152,7 @@ class Firmware(unittest.TestCase):
         self.assertIn('id="infoLastErr"', HTML)
         self.assertIn('function updateLogStrip', HTML)
         self.assertIn("fetch('/api/state')", HTML)
-        self.assertIn('n/a (relay; MAC not published)', HTML)
+        self.assertIn('infoBtMacWrap', HTML)
         header = HTML.split('<div class="dash">', 1)[0]
         self.assertNotIn('BT Signal', header)
         self.assertNotIn('chipWifi', header)
