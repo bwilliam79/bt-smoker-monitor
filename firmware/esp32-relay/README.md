@@ -11,7 +11,7 @@ The live dashboard default stays **This server** (the media-server radio). Enabl
 | `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`, `char`). `200` when a 20-byte NXE packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
 | `GET /api/gatt` | Cached service/characteristic dump (`r/w/n/i`, last-read hex). No Bluetooth addresses. Unauthenticated LAN diagnostic. |
 | `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`, `packetChar`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
-| `GET /` | Charcoal LAN page. Telemetry strip is Connected, Wi-Fi dBm, and BT to smoker dBm only (no IPs, no pit/set/probes). Three states: set password, unlock, logged-in config. Session cookie after set/unlock. |
+| `GET /` | Charcoal LAN page. Telemetry strip is Connected (NXE packet cached), Wi-Fi dBm, and BT to smoker dBm only (no IPs, no pit/set/probes). Footer shows `FW_VERSION` (e.g. fw v1.3.0). Three states: set password, unlock, logged-in config. Session cookie after set/unlock. |
 | `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional device password to NVS. `404` on STA. |
 | `POST /setpass` | First-time password (new+again, 8+). Sets session cookie. |
 | `POST /unlock` | Existing password, one field. Sets session cookie. |
