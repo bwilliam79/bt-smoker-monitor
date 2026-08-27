@@ -599,9 +599,10 @@ static void handleHealth() {
   server.send(200, "application/json", buf);
 }
 
-static void sendPage(const char *flash) {
+static void sendPage(const char *flash, bool forceIn = false) {
   bool hasPass = devicePass.length() > 0;
-  bool in = hasPass && sessionOk();
+  // forceIn: Set-Cookie is on this response; request Cookie is not present yet.
+  bool in = forceIn || (hasPass && sessionOk());
   int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   bool bleOn = bleClient && bleClient->isConnected();
   String html;
@@ -721,7 +722,7 @@ static void handleSetPass() {
     return;
   }
   addSessionCookie();
-  sendPage("Password saved.");
+  sendPage("Password saved.", true);
 }
 
 static void handleUnlock() {
@@ -735,7 +736,7 @@ static void handleUnlock() {
     return;
   }
   addSessionCookie();
-  sendPage("Unlocked.");
+  sendPage("Unlocked.", true);
 }
 
 static void handleLock() {
