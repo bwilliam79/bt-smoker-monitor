@@ -1,0 +1,5 @@
+item,qty,part,material,bbox_mm,process,notes
+P1,1,bottom.stl,PETG (preferred) or PLA,54.1x34.4x13.4,"FDM 0.20/0.4, 5 perimeters, 20% infill, no supports, floor down","v2: wider cavity, corner stops, larger snap windows; USB U-slot; pins enclosed"
+P2,1,lid.stl,PETG (preferred) or PLA,54.1x34.4x13.8,"FDM 0.20/0.4, 5 perimeters, 20% infill, no supports, OUTER FACE down","v2: snaps in flex channel, raised hinge; USB inverted-U; LED 0.6 mm membrane"
+H1,0,screws,—,—,none,snap-fit only; do not add screws
+A1,1,NodeMCU ESP-32S V1.1 (existing),—,48.5x25.4 ASSUMED,drop in,USB-C cable stays plugged in
