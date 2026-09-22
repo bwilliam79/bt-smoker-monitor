@@ -162,13 +162,13 @@ class RelayHealthTests(unittest.TestCase):
     def test_parse_with_name(self):
         hit = H['parse_relay_health']({
             'ok': True,
-            'name': 'patio',
+            'name': 'relay-a',
             'ble': False,
             'haveReading': True,
             'ap': '192.168.4.1',
             'sta': '203.0.113.118',
         }, '203.0.113.118')
-        self.assertEqual(hit, {'name': 'patio', 'host': '203.0.113.118'})
+        self.assertEqual(hit, {'name': 'relay-a', 'host': '203.0.113.118'})
 
     def test_parse_without_name_still_appears(self):
         # Live board before SoftAP-name flash.
@@ -178,40 +178,43 @@ class RelayHealthTests(unittest.TestCase):
             'haveReading': False,
             'ap': '192.168.4.1',
             'sta': '203.0.113.118',
-        }, '192.168.1.50')
+        }, '192.0.2.50')
         self.assertEqual(hit['host'], '203.0.113.118')
         self.assertEqual(hit['name'], 'smoker-relay')
 
 
     def test_sanitize_display_name(self):
-        self.assertEqual(H['sanitize_relay_display_name']('patio'), 'patio')
+        self.assertEqual(H['sanitize_relay_display_name']('relay-a'), 'relay-a')
         self.assertEqual(H['sanitize_relay_display_name']('  '), 'smoker-relay')
         self.assertEqual(H['sanitize_relay_display_name']('x<script>'), 'xscript')
         self.assertEqual(H['sanitize_relay_display_name']("a'b&c"), 'abc')
         self.assertEqual(H['sanitize_relay_display_name'](None), 'smoker-relay')
 
     def test_rejects_random_json(self):
-        self.assertIsNone(H['parse_relay_health']({'ok': True, 'status': 'up'}, '192.168.1.1'))
-        self.assertIsNone(H['parse_relay_health']({'ok': False, 'name': 'x'}, '192.168.1.1'))
+        self.assertIsNone(H['parse_relay_health']({'ok': True, 'status': 'up'}, '192.0.2.1'))
+        self.assertIsNone(H['parse_relay_health']({'ok': False, 'name': 'x'}, '192.0.2.1'))
 
     def test_probe_hosts_from_local_slash24(self):
-        hosts = H['discovery_probe_hosts'](['192.168.1.10'], ['203.0.113.118', '8.8.8.8'])
+        # House LAN fixtures use RFC5737 TEST-NET-1 (192.0.2.0/24).
+        hosts = H['discovery_probe_hosts'](['192.0.2.10'], ['203.0.113.118', '8.8.8.8'])
         self.assertIn('203.0.113.118', hosts)
-        self.assertIn('192.168.1.1', hosts)
+        self.assertIn('192.0.2.1', hosts)
         self.assertNotIn('8.8.8.8', hosts)
-        self.assertTrue(all(h.startswith('192.168.1.') for h in hosts))
+        self.assertTrue(all(h.startswith(('192.0.2.', '203.0.113.')) for h in hosts))
 
     def test_skips_docker_and_libvirt_slash24s(self):
         hosts = H['discovery_probe_hosts'](
-            ['172.17.0.1', '192.168.122.1', '203.0.113.23'],
+            ['172.17.0.1', '192.168.122.1', '192.0.2.23'],
             ['203.0.113.118'],
         )
         self.assertIn('203.0.113.118', hosts)
-        self.assertIn('203.0.113.23', hosts)
-        self.assertTrue(all(h.startswith('192.168.1.') for h in hosts))
+        self.assertIn('192.0.2.1', hosts)
+        self.assertTrue(all(h.startswith(('192.0.2.', '203.0.113.')) for h in hosts))
+        self.assertFalse(any(h.startswith('172.17.') for h in hosts))
+        self.assertFalse(any(h.startswith('192.168.122.') for h in hosts))
         self.assertFalse(H['lan_scan_source_ok']('172.17.0.1'))
         self.assertFalse(H['lan_scan_source_ok']('192.168.122.1'))
-        self.assertTrue(H['lan_scan_source_ok']('203.0.113.23'))
+        self.assertTrue(H['lan_scan_source_ok']('192.0.2.23'))
 
 
 if __name__ == '__main__':
