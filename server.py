@@ -1,1 +1,1 @@
-@/workspace/tip-scrub/bt-smoker-monitor/server.py
+<file path="/workspace/tip-scrub/MCP_CONTENT_server.py"/>
