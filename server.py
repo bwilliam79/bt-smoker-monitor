@@ -288,12 +288,35 @@ def parse_relay_telemetry(payload: dict) -> dict | None:
     if isinstance(sta, str) and sta.strip() and parse_relay_host(sta.strip()):
         sta_s = sta.strip()
     name = sanitize_relay_display_name(payload.get('name'))
+
+    def as_u32(v):
+        if isinstance(v, bool) or not isinstance(v, int):
+            return None
+        if v < 0:
+            return None
+        return v
+
+    reason = payload.get('resetReason')
+    if isinstance(reason, str):
+        reason = ''.join(c for c in reason if 32 <= ord(c) < 127)[:40]
+    else:
+        reason = ''
+    fw = payload.get('fw')
+    if isinstance(fw, str):
+        fw = ''.join(c for c in fw if 32 <= ord(c) < 127)[:16]
+    else:
+        fw = ''
     return {
         'wifiRssi': as_rssi(payload.get('wifiRssi')),
         'bleRssi': as_rssi(payload.get('bleRssi')),
         'lastErr': err,
         'sta': sta_s,
         'name': name,
+        'uptimeMs': as_u32(payload.get('uptimeMs')),
+        'resetReason': reason,
+        'lastPollOkMs': as_u32(payload.get('lastPollOkMs')),
+        'bleConnectCount': as_u32(payload.get('bleConnectCount')),
+        'fw': fw,
     }
 
 
@@ -569,6 +592,11 @@ state    = {
     'relay_fail_count': 0,   # consecutive /api/reading misses (relay mode)
     'stale':         False,  # True while debounce holds last good reading
     'stale_reason':  '',
+    'relay_uptime_ms': None,
+    'relay_ble_connect_count': None,
+    'relay_reset_reason': '',
+    'relay_fw': '',
+    'relay_rebooted': False,
     'history':       [],
     'log_history':   [],
     'interval':      30,
@@ -1034,10 +1062,15 @@ async def _process_reading(dec: dict, tick_time: float, ble_device, rssi) -> Non
     dec['connected']       = True
     dec['stale']           = False
     dec['stale_reason']    = ''
+    dec['relay_rebooted']  = False
+    dec['relay_fw']        = state.get('relay_fw') or ''
+    dec['relay_reset_reason'] = state.get('relay_reset_reason') or ''
 
     state['relay_fail_count'] = 0
     state['stale'] = False
     state['stale_reason'] = ''
+    # Keep relay_rebooted sticky across the next UI refresh; clear after a good read.
+    state['relay_rebooted'] = False
     state['last'] = dec
     state['smoker_online'] = True
     state['history'].append(dec)
@@ -1066,6 +1099,30 @@ def _apply_relay_telemetry(tel: dict | None) -> None:
         state['relay_name'] = tel['name']
     if state['bleRssi'] is not None:
         state['rssi'] = state['bleRssi']
+
+    up = tel.get('uptimeMs')
+    bcc = tel.get('bleConnectCount')
+    prev_up = state.get('relay_uptime_ms')
+    prev_bcc = state.get('relay_ble_connect_count')
+    rebooted = False
+    if isinstance(up, int) and isinstance(prev_up, int) and up + 5000 < prev_up:
+        rebooted = True
+    if isinstance(bcc, int) and isinstance(prev_bcc, int) and bcc < prev_bcc:
+        rebooted = True
+    if rebooted:
+        reason = tel.get('resetReason') or 'unknown'
+        log.warning('ESP relay rebooted (uptimeMs %s→%s, bleConnectCount %s→%s, resetReason=%s)',
+                    prev_up, up, prev_bcc, bcc, reason)
+        state['relay_rebooted'] = True
+        add_log('WARN', f'Relay rebooted ({reason})', 'tag-warn', time.time())
+    if isinstance(up, int):
+        state['relay_uptime_ms'] = up
+    if isinstance(bcc, int):
+        state['relay_ble_connect_count'] = bcc
+    if tel.get('resetReason'):
+        state['relay_reset_reason'] = tel['resetReason']
+    if tel.get('fw'):
+        state['relay_fw'] = tel['fw']
 
 
 def _relay_telemetry_msg() -> dict:
@@ -1394,6 +1451,11 @@ async def api_state():
     last['connected'] = bool(state.get('smoker_online'))
     last['stale'] = bool(state.get('stale'))
     last['stale_reason'] = state.get('stale_reason') or ''
+    last['relay_rebooted'] = bool(state.get('relay_rebooted'))
+    last['relay_uptime_ms'] = state.get('relay_uptime_ms')
+    last['relay_ble_connect_count'] = state.get('relay_ble_connect_count')
+    last['relay_reset_reason'] = state.get('relay_reset_reason') or ''
+    last['relay_fw'] = state.get('relay_fw') or ''
     last['probeUiTargets'] = state.get('probe_ui_targets', [None, None])[:]
     last['rssi'] = state.get('rssi')
     last['wifiRssi'] = state.get('wifiRssi')
