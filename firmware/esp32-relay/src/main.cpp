@@ -38,7 +38,7 @@ static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
 static String sessionSid = "";
 static int lastRssi = 0;
-static const char *FW_VERSION = "v1.4.3";
+static const char *FW_VERSION = "v1.4.4";
 static bool haveReading = false;
 static bool scanning = false;
 static bool haveTarget = false;
@@ -52,7 +52,11 @@ static NimBLEClient *bleClient = nullptr;
 static NimBLERemoteCharacteristic *tempChar = nullptr;
 static uint32_t lastReadMs = 0;
 static uint32_t lastPollMs = 0;
-static const uint32_t POLL_EVERY_MS = 20000;
+static uint32_t lastPollOkMs = 0;
+static uint32_t bleConnectCount = 0;
+static uint8_t consecutivePollFails = 0;
+static String bootResetReason = "unknown";
+static const uint32_t POLL_EVERY_MS = 30000;
 static String staSsid = "";
 static String staStatus = "not joined";
 static String relayName = "smoker-relay";
@@ -65,6 +69,29 @@ static volatile bool notifyPending = false;
 
 static uint16_t u16le(const uint8_t *p) {
   return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static const char *resetReasonToStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON: return "power_on";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "int_wdt";
+    case ESP_RST_TASK_WDT: return "task_wdt";
+    case ESP_RST_WDT: return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO: return "sdio";
+    default: return "unknown";
+  }
+}
+
+static void ensureBleDisconnected() {
+  if (bleClient && bleClient->isConnected()) {
+    bleClient->disconnect();
+    delay(50);
+  }
 }
 
 static bool isSoftAp() {
@@ -393,23 +420,29 @@ static bool pollOnce() {
   }
   if (!bleClient) {
     bleClient = NimBLEDevice::createClient();
-    bleClient->setConnectTimeout(15);
+    bleClient->setConnectTimeout(10);
   }
-  if (bleClient->isConnected()) {
-    bleClient->disconnect();
-    delay(200);
-  }
+  ensureBleDisconnected();
   tempChar = nullptr;
   notifyPending = false;
   notifySrc = nullptr;
   notifyLen = 0;
+
+  bool ok = false;
   if (!bleClient->connect(targetAddr, false)) {
     setLastErr("connect failed");
-    haveReading = false;
     Serial.println("connect failed");
+    // Keep last haveReading across ONE failed poll to cut 503 flaps.
+    consecutivePollFails++;
+    if (consecutivePollFails > 1) {
+      haveReading = false;
+    }
+    ensureBleDisconnected();
     return false;
   }
+  bleConnectCount++;
   lastRssi = bleClient->getRssi();
+
   NimBLERemoteCharacteristic *ipCh = findChar(bleClient, CHAR_IP);
   if (ipCh && ipCh->canRead()) {
     std::string ip = ipCh->readValue();
@@ -422,22 +455,27 @@ static bool pollOnce() {
     lastIp = cleaned;
   }
   tempChar = findChar(bleClient, CHAR_TEMP);
-  bool ok = false;
   if (tempChar && tempChar->canRead()) {
     std::string raw = tempChar->readValue();
     std::string cu = tempChar->getUUID().toString();
     publish(reinterpret_cast<const uint8_t *>(raw.data()), raw.size(), cu.c_str());
     ok = haveReading;
   }
-  if (!haveReading) {
+
+  // Always drop the ACL — never remain NXE's controller.
+  ensureBleDisconnected();
+
+  if (ok) {
+    consecutivePollFails = 0;
+    lastPollOkMs = millis();
+    setLastErr("");
+  } else {
     setLastErr("poll read missed packet");
+    consecutivePollFails++;
+    if (consecutivePollFails > 1) {
+      haveReading = false;
+    }
   }
-  if (!ok) {
-    // Stale cache made cook UI stay Connected while the grill was gone.
-    haveReading = false;
-  }
-  bleClient->disconnect();
-  delay(50);
   Serial.printf("poll done ok=%d\n", ok ? 1 : 0);
   return ok;
 }
@@ -554,22 +592,25 @@ static void handleHealth() {
   String nameEsc = jsonEscape(relayName);
   String errEsc = jsonEscape(lastErr);
   String charEsc = jsonEscape(lastPacketChar);
+  String reasonEsc = jsonEscape(bootResetReason);
   String ap = isSoftAp() ? WiFi.softAPIP().toString() : "";
   String sta = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
-  char buf[520];
+  char buf[720];
   int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   snprintf(buf, sizeof(buf),
            "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
-           "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\",\"packetChar\":\"%s\"}",
+           "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\",\"packetChar\":\"%s\","
+           "\"uptimeMs\":%lu,\"resetReason\":\"%s\",\"lastPollOkMs\":%lu,\"bleConnectCount\":%lu,\"fw\":\"%s\"}",
            nameEsc.c_str(),
            bleClient && bleClient->isConnected() ? "true" : "false",
            haveReading ? "true" : "false",
            ap.c_str(),
            sta.c_str(),
-           wifiRssi, lastRssi, errEsc.c_str(), charEsc.c_str());
+           wifiRssi, lastRssi, errEsc.c_str(), charEsc.c_str(),
+           (unsigned long)millis(), reasonEsc.c_str(),
+           (unsigned long)lastPollOkMs, (unsigned long)bleConnectCount, FW_VERSION);
   server.send(200, "application/json", buf);
 }
-
 
 static void redirectHome() {
   server.sendHeader("Location", "/", true);
@@ -878,6 +919,7 @@ static void startWifi() {
 }
 
 void setup() {
+  bootResetReason = resetReasonToStr(esp_reset_reason());
   Serial.begin(115200);
   delay(200);
   Serial.println("smoker-ble-relay boot");
@@ -929,10 +971,7 @@ void loop() {
 
 
   // Never remain the NXE controller. Disconnect leftovers, then poll.
-  if (bleClient && bleClient->isConnected()) {
-    bleClient->disconnect();
-    delay(50);
-  }
+  ensureBleDisconnected();
 
   if (!haveTarget) {
     if (!scanning) {
