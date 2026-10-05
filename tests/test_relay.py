@@ -258,3 +258,26 @@ class LinkTransitionTests(unittest.TestCase):
         self.assertEqual(H['link_transition']('down', True), 'connected')
         self.assertIsNone(H['link_transition']('up', True))
 
+
+class RelayDebounceTests(unittest.TestCase):
+    def test_stale_reason_defaults(self):
+        self.assertEqual(H['relay_stale_reason'](''), 'relay BLE miss')
+        self.assertEqual(H['relay_stale_reason'](None), 'relay BLE miss')
+        self.assertEqual(H['relay_stale_reason']('connect failed'), 'connect failed')
+
+    def test_stay_stale_for_first_two_misses(self):
+        stay = H['relay_miss_should_stay_stale']
+        self.assertTrue(stay(1, True))
+        self.assertTrue(stay(2, True))
+        self.assertFalse(stay(3, True))
+        self.assertFalse(stay(4, True))
+
+    def test_no_debounce_without_last_good(self):
+        stay = H['relay_miss_should_stay_stale']
+        self.assertFalse(stay(1, False))
+        self.assertFalse(stay(2, False))
+        self.assertFalse(stay(3, False))
+
+    def test_threshold_constant(self):
+        self.assertEqual(H['RELAY_OFFLINE_AFTER_FAILS'], 3)
+
