@@ -1353,7 +1353,10 @@ function connect() {
       smokerWasOffline = false;
       log('SYS', 'Smoker reconnected.', 'tag-sys', tickDate);
     }
-    if (d.stale) {
+    if (d.relay_rebooted) {
+      setStatus('stale', 'Relay rebooted');
+      log('WARN', `Relay rebooted (${d.relay_reset_reason || 'unknown'})`, 'tag-warn', tickDate);
+    } else if (d.stale) {
       const why = d.stale_reason ? String(d.stale_reason) : 'relay BLE miss';
       setStatus('stale', `Connected (stale) — ${why}`);
     } else {

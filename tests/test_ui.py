@@ -172,9 +172,9 @@ class Firmware(unittest.TestCase):
         self.assertIn('sessionOk', save)
         self.assertIn('BT to smoker', FIRMWARE)
         self.assertIn('FW_VERSION', FIRMWARE)
-        self.assertIn('v1.4.3', FIRMWARE)
+        self.assertIn('v1.4.4', FIRMWARE)
         self.assertIn('haveReading = false', FIRMWARE)
-        self.assertIn('Stale cache made cook UI', FIRMWARE)
+        self.assertIn('Keep last haveReading across ONE failed poll', FIRMWARE)
         self.assertNotIn('Resume BLE', FIRMWARE)
         self.assertNotIn('BLE held', FIRMWARE)
         self.assertNotIn('bleHeld', FIRMWARE)
@@ -197,6 +197,10 @@ class Firmware(unittest.TestCase):
         self.assertIn('relay_miss_should_stay_stale', SERVER)
         self.assertIn('_apply_stale', SERVER)
         self.assertIn('_log_relay_503_rate_limited', SERVER)
+        self.assertIn('uptimeMs', FIRMWARE)
+        self.assertIn('bleConnectCount', FIRMWARE)
+        self.assertIn('relay_rebooted', SERVER)
+        self.assertIn('Relay rebooted', HTML)
 
 class DisconnectNotify(unittest.TestCase):
     def test_edge_latch_not_initialized_online(self):
