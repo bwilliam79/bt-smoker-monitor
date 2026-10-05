@@ -102,6 +102,7 @@
     .status-wrap { display: none; }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; flex-shrink: 0; }
     .dot.connected    { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+    .dot.stale        { background: #eab308; box-shadow: 0 0 6px #eab30888; }
     .dot.connecting   { background: #f97316; animation: pulse 0.8s infinite; }
     .dot.disconnected { background: #ef4444; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
@@ -1352,12 +1353,21 @@ function connect() {
       smokerWasOffline = false;
       log('SYS', 'Smoker reconnected.', 'tag-sys', tickDate);
     }
-    setStatus('connected', 'Connected');
+    if (d.stale) {
+      const why = d.stale_reason ? String(d.stale_reason) : 'relay BLE miss';
+      setStatus('stale', `Connected (stale) — ${why}`);
+    } else {
+      setStatus('connected', 'Connected');
+    }
     setDashVisible(true);
     lastData = d;
     updateDash(d);
-    pushChartPoint(d, tickDate);
-    checkAlarms(d);
+    // Don't push chart/alarms on debounced stale holds — temps are last-known.
+    if (!d.stale) {
+      pushChartPoint(d, tickDate);
+      checkAlarms(d);
+    }
+    updateLogStrip(d);
   };
 
   ws.onclose = () => {

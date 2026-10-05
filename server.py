@@ -336,6 +336,24 @@ def relay_host_is_allowed(raw: str) -> bool:
 reading_from_relay_payload = parse_relay_payload
 
 
+RELAY_OFFLINE_AFTER_FAILS = 3
+
+
+def relay_stale_reason(last_err: str | None) -> str:
+    """Human reason for a debounced relay miss (UI /api/state stale_reason)."""
+    err = (last_err or '').strip()
+    return err if err else 'relay BLE miss'
+
+
+def relay_miss_should_stay_stale(fail_count: int, has_last_good: bool,
+                                 threshold: int = RELAY_OFFLINE_AFTER_FAILS) -> bool:
+    """True = keep last reading as stale; False = call _apply_offline.
+
+    fail_count is the consecutive miss count *after* incrementing for this poll.
+    """
+    return bool(has_last_good) and 0 < int(fail_count) < int(threshold)
+
+
 def link_transition(prev: str | None, now_up: bool) -> str | None:
     """Which connection ntfy to send for this poll, or None to stay quiet.
 
@@ -548,6 +566,9 @@ state    = {
     'adapter':       None,
     'connection':    CONNECTION_LOCAL,  # 'local' (this server) | 'relay'
     'relay_host':    DEFAULT_RELAY_HOST,
+    'relay_fail_count': 0,   # consecutive /api/reading misses (relay mode)
+    'stale':         False,  # True while debounce holds last good reading
+    'stale_reason':  '',
     'history':       [],
     'log_history':   [],
     'interval':      30,
@@ -857,6 +878,24 @@ def _relay_http_get(url: str, timeout: float = 8):
         return json.loads(resp.read().decode())
 
 
+_last_relay_503_log_mono = 0.0
+_RELAY_503_LOG_EVERY_SECS = 30.0
+
+
+def _log_relay_503_rate_limited() -> None:
+    """Warn on /api/reading 503 without spamming every 30s poll."""
+    global _last_relay_503_log_mono
+    now = time.monotonic()
+    if now - _last_relay_503_log_mono < _RELAY_503_LOG_EVERY_SECS:
+        return
+    _last_relay_503_log_mono = now
+    err = state.get('lastErr') or ''
+    if err:
+        log.warning('Relay /api/reading 503 (BLE miss): %s', err)
+    else:
+        log.warning('Relay /api/reading 503 (haveReading cleared / BLE miss)')
+
+
 async def read_from_relay() -> tuple[dict | None, object | None, int | None]:
     """Poll ESP-32 /health (telemetry) then /api/reading (temps). Never follows a non-LAN host."""
     host = state.get('relay_host') or DEFAULT_RELAY_HOST
@@ -876,7 +915,9 @@ async def read_from_relay() -> tuple[dict | None, object | None, int | None]:
     try:
         payload = await loop.run_in_executor(None, _relay_http_get, reading_url)
     except HTTPError as exc:
-        if exc.code != 503:
+        if exc.code == 503:
+            _log_relay_503_rate_limited()
+        else:
             log.exception('Relay poll failed')
         return None, None, None
     except Exception:
@@ -991,7 +1032,12 @@ async def _process_reading(dec: dict, tick_time: float, ble_device, rssi) -> Non
     dec['stalled']         = state['probe_stalled'][:]
     dec['probeUiTargets']  = state['probe_ui_targets'][:]
     dec['connected']       = True
+    dec['stale']           = False
+    dec['stale_reason']    = ''
 
+    state['relay_fail_count'] = 0
+    state['stale'] = False
+    state['stale_reason'] = ''
     state['last'] = dec
     state['smoker_online'] = True
     state['history'].append(dec)
@@ -1068,12 +1114,42 @@ def _mark_disconnected():
             'stalled':   [False, False],
         }
 
+async def _apply_stale(reason: str) -> None:
+    """Hold last good temps while relay /api/reading misses (debounce). No ntfy."""
+    reason = relay_stale_reason(reason)
+    state['stale'] = True
+    state['stale_reason'] = reason
+    # link stays 'up'; smoker_online stays True — only real offline edges notify.
+    if state.get('last') is not None:
+        state['last'] = {
+            **state['last'],
+            'connected': True,
+            'stale': True,
+            'stale_reason': reason,
+            'rssi': state.get('rssi'),
+            'wifiRssi': state.get('wifiRssi'),
+            'bleRssi': state.get('bleRssi'),
+            'lastErr': state.get('lastErr') or reason,
+        }
+        await broadcast(dict(state['last']))
+    else:
+        await broadcast({
+            'connected': True,
+            'stale': True,
+            'stale_reason': reason,
+            **_relay_telemetry_msg(),
+        })
+
+
 async def _apply_offline(tick_time: float) -> None:
     """Mark the smoker down. ntfy only on an up→down edge, not unknown→down."""
     prev = state.get('link') or 'unknown'
     event = link_transition(prev, False)
+    state['stale'] = False
+    state['stale_reason'] = ''
     _mark_disconnected()
-    await broadcast({'smoker_offline': True, 'connected': False, **_relay_telemetry_msg()})
+    await broadcast({'smoker_offline': True, 'connected': False, 'stale': False,
+                     'stale_reason': '', **_relay_telemetry_msg()})
     if event == 'disconnected':
         print('Smoker not found — will keep retrying.')
         add_log('WARN', 'Smoker offline — retrying…', 'tag-warn', tick_time)
@@ -1107,17 +1183,40 @@ async def poll_loop(interval: int):
         try:
             if (state.get('connection') or CONNECTION_LOCAL) == CONNECTION_RELAY:
                 dec, ble_device, rssi = await read_from_relay()
+                consecutive_inprogress = 0
+                if dec:
+                    await _process_reading(dec, tick_time, ble_device, rssi)
+                    success = True
+                    backoff = BACKOFF_START_SECS   # reset backoff on any good read
+                else:
+                    # Debounce: 3 consecutive /api/reading misses before true offline.
+                    state['relay_fail_count'] = int(state.get('relay_fail_count') or 0) + 1
+                    last = state.get('last')
+                    has_last_good = bool(
+                        state.get('smoker_online')
+                        and isinstance(last, dict)
+                        and last.get('grill') is not None
+                    )
+                    if relay_miss_should_stay_stale(state['relay_fail_count'], has_last_good):
+                        await _apply_stale(state.get('lastErr') or '')
+                        # Stay on the clock-aligned interval — backoff only when truly offline.
+                        success = True
+                        print(
+                            f'Relay miss {state["relay_fail_count"]}/{RELAY_OFFLINE_AFTER_FAILS} '
+                            f'(stale: {relay_stale_reason(state.get("lastErr"))})'
+                        )
+                    else:
+                        await _apply_offline(tick_time)
             else:
                 dec, ble_device, rssi = await scan_and_read()
-            consecutive_inprogress = 0
-
-            if dec:
-                await _process_reading(dec, tick_time, ble_device, rssi)
-                success = True
-                backoff = BACKOFF_START_SECS   # reset backoff on any good read
-            else:
-                # Scan found nothing / relay 503 (grill unplugged)
-                await _apply_offline(tick_time)
+                consecutive_inprogress = 0
+                if dec:
+                    await _process_reading(dec, tick_time, ble_device, rssi)
+                    success = True
+                    backoff = BACKOFF_START_SECS   # reset backoff on any good read
+                else:
+                    # Scan found nothing
+                    await _apply_offline(tick_time)
 
         except BleakDBusError as exc:
             if 'InProgress' in str(exc):
@@ -1293,6 +1392,8 @@ async def api_state():
     # an empty body".
     last = dict(state['last']) if state['last'] else {}
     last['connected'] = bool(state.get('smoker_online'))
+    last['stale'] = bool(state.get('stale'))
+    last['stale_reason'] = state.get('stale_reason') or ''
     last['probeUiTargets'] = state.get('probe_ui_targets', [None, None])[:]
     last['rssi'] = state.get('rssi')
     last['wifiRssi'] = state.get('wifiRssi')

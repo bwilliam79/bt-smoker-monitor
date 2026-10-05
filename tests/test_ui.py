@@ -189,6 +189,15 @@ class Firmware(unittest.TestCase):
         self.assertNotIn('setPoint', FIRMWARE.split('static void sendPage', 1)[1].split('static void handleRoot', 1)[0])
 
 
+    def test_relay_stale_debounce_ui(self):
+        self.assertIn('dot.stale', HTML)
+        self.assertIn('Connected (stale)', HTML)
+        self.assertIn('stale_reason', HTML)
+        self.assertIn('RELAY_OFFLINE_AFTER_FAILS', SERVER)
+        self.assertIn('relay_miss_should_stay_stale', SERVER)
+        self.assertIn('_apply_stale', SERVER)
+        self.assertIn('_log_relay_503_rate_limited', SERVER)
+
 class DisconnectNotify(unittest.TestCase):
     def test_edge_latch_not_initialized_online(self):
         self.assertIn("def link_transition", SERVER)
