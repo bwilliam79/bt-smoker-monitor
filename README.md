@@ -17,9 +17,9 @@ A local web dashboard for monitoring a Nexgrill Bluetooth smoker in real time. A
 - **Audible alarms** — siren when a probe exceeds its target; voice announcement when a probe reaches its target
 - **Push notifications** — optional ntfy.sh integration for probe at temp, probe over temp, grill at temp, grill over temp, smoker connected, and smoker disconnected events
 - **Smoker at-temperature timer** — shows how long the smoker has held its set temperature
-- **Offline detection** — dashboard reflects when the smoker is unreachable; cards hide automatically
+- **Offline detection** — when the smoker is unreachable the temperature tiles hide and an empty state explains that the server keeps retrying
 - **Multi-client** — open the dashboard in multiple browsers simultaneously; all receive the same server-computed state
-- **In-app settings** — gear icon (⚙️) opens a settings modal to choose This server vs ESP-32 relay, pick a LAN relay (name + IP) or a Bluetooth adapter, and set the ntfy.sh topic
+- **In-app settings** — the settings button opens a modal to choose This server vs ESP-32 relay, pick a LAN relay (name + IP) or a Bluetooth adapter, and set the ntfy.sh topic
 - **Runs as a Docker container**
 - **App icon** — favicon, Apple touch icon, and PWA icons use a head-on photo of the smoker lid (wood handle). Hopper artwork is not used.
 
@@ -80,9 +80,9 @@ Then open **http://\<host-ip\>:8080** in any browser.
 
 ## Configuration
 
-### In-app settings (⚙️)
+### In-app settings
 
-Click the **⚙️** icon in the top-right corner to open the settings modal.
+Click the settings button in the header to open the settings modal.
 
 | Setting | Description |
 |---------|-------------|
@@ -90,7 +90,7 @@ Click the **⚙️** icon in the top-right corner to open the settings modal.
 | **Bluetooth Adapter** | Shown for This server. Select which adapter to use. Lists available adapters with their id and friendly name. Change takes effect on the next scan. |
 | **Relay** | Shown for ESP-32 relay. Scans the LAN for boards that answer `GET /health` and lists **name — IP** (name from the SoftAP Wi-Fi form). Pick one — happy path is pick, not type. If discovery finds nothing, a secondary **Or type IP** field appears. Public / WAN hosts are rejected. Live boards without a name field still appear as `smoker-relay` + IP. |
 | **ntfy.sh Topic** | Push notification topic. Leave blank to disable. |
-| **Public login** | Gear → **PUBLIC LOGIN** section with real labels above fields (**Username**, **New password**). Hint: “Leave blank to keep the current password.” Credentials for `https://smoker.example.com`. Editable on kitchen LAN only (`http://203.0.113.23:8888`). Eight or more characters. Hashed in `/data/config.json`. Never returned by the API. |
+| **Public login** | Settings → **PUBLIC LOGIN** section with real labels above fields (**Username**, **New password**). Hint: “Leave blank to keep the current password.” Credentials for `https://smoker.example.com`. Editable on kitchen LAN only (`http://203.0.113.23:8888`). Eight or more characters. Hashed in `/data/config.json`. Never returned by the API. |
 
 Settings are saved to `/data/config.json` and persist across container restarts. Missing `connection` means This server, so a live cook keeps using the media-server radio.
 
@@ -101,7 +101,7 @@ Kitchen LAN `http://203.0.113.23:8888` stays open (no login). The public host al
 
 - Unauthenticated `GET /api/*` and `WS /ws` on Host `smoker.example.com` return **401**.
 - `GET /login` is a form that POSTs to `/login` on that same origin. A successful login sets an HttpOnly `sid` cookie (`Secure` on HTTPS, `SameSite=Lax`).
-- With no password configured yet, public APIs still 401 (fail closed). Set credentials from the LAN gear modal first.
+- With no password configured yet, public APIs still 401 (fail closed). Set credentials from the LAN settings modal first.
 - Changing username/password on the public host is **403**, even with a session.
 - Caddy only reverse-proxies TLS; there is no Caddy basicauth. The ESP-32 relay (`203.0.113.118`) is not on this door.
 
@@ -118,7 +118,7 @@ Optional second radio: an ESP-32 near the smoker serves `GET /api/reading` on it
 Print files for the NodeMCU ESP-32S relay enclosure live in [`hardware/esp32-case-v2/`](hardware/esp32-case-v2/). **v2 is the snap-fit fix the owner printed and approved** (no screws; USB-C stays plugged in). STL/3MF for the K1C, STEP, drawings, and Cade’s generate script are in that folder.
 
 
-Relay radios belong in the **Log** strip, not the top of the cook page. The header is only the Connected pill (green only on a real NXE temp packet). The log strip shows Smoker IP (grill LAN IP from BLE, never the relay STA), Relay name+host, BT Signal (`bleRssi`), Wi-Fi (`wifiRssi`), poll interval, and `lastErr`. BT Address is hidden in relay mode. Dashes are not used; unknown fields say why. The monitor polls `/health` every tick even when `/api/reading` is 503.
+Relay radios belong in the **Log** strip, not the top of the cook page. The header is the title, the connection pill (green only on a real NXE temp packet), and settings. Inside the log body the strip shows Smoker IP (grill LAN IP from BLE, never the relay STA), BT address (hidden in relay mode), Adapter (labelled **Relay** in relay mode: name + host), Poll interval, Signal (`bleRssi`), Wi-Fi (`wifiRssi`), and last error. Signal is coloured Good at −65 dBm or better, Fair down to −80, otherwise Weak. Unknown fields say why. The monitor polls `/health` every tick even when `/api/reading` is 503.
 
 
 ---
@@ -131,7 +131,7 @@ The app uses [ntfy.sh](https://ntfy.sh) — a free, open-source push notificatio
 
 1. Install the **ntfy** app on your phone ([iOS](https://apps.apple.com/app/ntfy/id1625641461) / [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy))
 2. Subscribe to your chosen topic in the ntfy app
-3. Enter the same topic in the app's settings modal (⚙️)
+3. Enter the same topic in the app's settings modal
 
 ### Notification events
 
@@ -152,13 +152,17 @@ Connect and disconnect alerts are **edge-triggered**. Online→offline fires one
 
 | Element | Description |
 |---------|-------------|
-| **⚙️ button** | Opens the settings modal (top-right corner) |
-| **Status bar** | WebSocket connection and BLE smoker status |
-| **Smoker card** (blue) | Current grill temp, set point, at-temp timer, over/under temp indicator |
-| **Probe 1 card** (red) | Current probe temp, target, ETA — hidden when probe not connected |
-| **Probe 2 card** (yellow) | Current probe temp, target, ETA — hidden when probe not connected |
+| **Settings button** | Opens the settings modal (header, top-right) |
+| **Status pill** | WebSocket connection and BLE smoker status |
+| **Smoker tile** | Current grill temp, read-only set point, "At temp for …" / over / under. No ETA |
+| **Probe 1 tile** | Current probe temp, editable alert target, ETA or stall. "—" when the probe is disconnected |
+| **Probe 2 tile** | Same as Probe 1 |
 | **Chart** | 24-hour scrolling history with dashed target lines |
-| **Log panel** | Connection events, alarms, and setting changes |
+| **Log panel** | Collapsed by default. Connection events, alarms, and setting changes. Info strip is inside the log body |
+
+### Pit Instrument (v1.4.0)
+
+Smoker, Probe 1, and Probe 2 share one tile (label, big reading, target at the top-right, status along the bottom). The smoker target is the controller set point and is **read-only** in this UI — nothing on the page writes it; change it on the smoker. Probe targets stay editable number fields; they are alert thresholds only. On a phone the sections stack as tiles, then Log, then the chart. At 1024×560 or larger the collapsed page fits the window (no scroll) and the Log header stays on screen; expand Log to scroll the entries. The app version is the small muted `v` + `VERSION` line under Save / Cancel in Settings, not a dashboard footer.
 
 ### Temperature indicators
 
@@ -166,7 +170,7 @@ Connect and disconnect alerts are **edge-triggered**. Online→offline fires one
 |-------|---------|
 | Heating toward target | ETA ~23 min (server-computed, updates every poll) |
 | Temp stalled | In stall – ETA paused |
-| Within 5°F of target | At Temperature |
+| Smoker within 5°F of its set point | At temp for … |
 | More than 5°F over target | **Over Temperature** (pulsing border) |
 | More than 5°F under target | **Under Temperature** |
 
@@ -184,13 +188,13 @@ Connect and disconnect alerts are **edge-triggered**. Online→offline fires one
 
 The smoker only supports **one BLE connection at a time**. Close the official Nexgrill app before using this monitor, otherwise connections will fail.
 
-If you have multiple Bluetooth adapters, select the one to use from the in-app settings (⚙️) while Connection is This server. You can also set the initial adapter at startup with `--adapter hciX`.
+If you have multiple Bluetooth adapters, select the one to use from the in-app settings while Connection is This server. You can also set the initial adapter at startup with `--adapter hciX`.
 
 ---
 
 ## Versioning
 
-The app version is stored in `VERSION` (`MAJOR.MINOR.PATCH`) and shown in the footer of the page. Bump patch for bug fixes, minor for enhancements/features, major for breaking changes.
+The app version is stored in `VERSION` (`MAJOR.MINOR.PATCH`) and shown in Settings (`v` + that value), under Save / Cancel. Bump patch for bug fixes, minor for enhancements/features, major for breaking changes. The service worker cache name tracks the same release so installed PWAs drop the previous shell.
 
 ---
 
