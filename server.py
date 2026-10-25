@@ -1311,42 +1311,65 @@ async def poll_loop(interval: int):
             backoff = min(backoff * 2, BACKOFF_MAX_SECS)
 
 # ── HTTP / WebSocket routes ───────────────────────────────────────────────────
+def _dashboard_style() -> str:
+    """The pit-instrument stylesheet from index.html, so login uses the same tokens."""
+    html = Path('index.html').read_text(encoding='utf-8')
+    start = html.find('<style>')
+    end = html.find('</style>')
+    if start < 0 or end < 0:
+        return ''
+    return html[start:end + len('</style>')]
+
+
 LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#f97316">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-<link rel="manifest" href="/manifest.json">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0E0F11">
+<meta name="description" content="Live temperature monitor for a Bluetooth smoker">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Smoker">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1.4.0">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=1.4.0">
+<link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png?v=1.4.0">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=1.4.0">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=1.4.0">
+<link rel="manifest" href="/manifest.json?v=1.4.0">
 <title>Smoker Monitor — Sign in</title>
-<style>
-  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-         background:#140c08; color:#f5e6d3; font-family:system-ui,sans-serif; }
-  form { width:min(22rem,92vw); background:#1f140e; border:1px solid #3d2a1d; border-radius:12px; padding:1.5rem; }
-  h1 { margin:0 0 1rem; font-size:1.15rem; color:#f97316; }
-  label { display:block; font-size:.75rem; letter-spacing:.04em; color:#c4a484; margin:.7rem 0 .25rem; }
-  input { width:100%; box-sizing:border-box; padding:.55rem .7rem; border-radius:8px; border:1px solid #5a3c28;
-          background:#140c08; color:#f5e6d3; }
-  button { margin-top:1.1rem; width:100%; padding:.7rem; border:0; border-radius:8px; background:#f97316; color:#1a0e08; font-weight:600; cursor:pointer; }
-  p { color:#c4a484; font-size:.85rem; }
-</style>
+__STYLE__
 </head>
 <body>
-<form method="POST" action="/login">
-  <h1>Smoker Monitor</h1>
-  __MSG__
-  <label for="username">Username</label>
-  <input id="username" name="username" type="text" autocomplete="username" required>
-  <label for="password">Password</label>
-  <input id="password" name="password" type="password" autocomplete="current-password" required>
-  <button type="submit">Sign in</button>
+<div class="modal-overlay open">
+<form class="modal" method="POST" action="/login">
+  <div class="modal-title-row">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+      </span>
+      <h1 class="brand-name">Smoker Monitor</h1>
+    </div>
+  </div>
+  <div class="modal-row">
+    __MSG__
+    <label class="field-label" for="username">Username</label>
+    <input id="username" name="username" class="modal-input" type="text" autocomplete="username" required>
+    <label class="field-label" for="password">Password</label>
+    <input id="password" name="password" class="modal-input" type="password" autocomplete="current-password" required>
+  </div>
+  <div class="modal-actions">
+    <button type="submit" class="modal-save">Sign in</button>
+  </div>
 </form>
+</div>
 </body>
 </html>
 """
+
+
+def render_login_page(message: str) -> str:
+    return LOGIN_PAGE.replace('__STYLE__', _dashboard_style()).replace('__MSG__', message)
 
 
 @app.get('/')
@@ -1360,10 +1383,10 @@ async def index():
 async def login_get(request: FastAPIRequest):
     msg = ''
     if request.query_params.get('err') == '1':
-        msg = '<p>Wrong username or password.</p>'
+        msg = '<p class="tile-status is-alert">Wrong username or password.</p>'
     elif not (state.get('login_user') and state.get('login_hash')):
-        msg = '<p>Set a username and password on LAN :8888 first (Settings → Public login).</p>'
-    return HTMLResponse(LOGIN_PAGE.replace('__MSG__', msg))
+        msg = '<p class="modal-hint">Set a username and password on LAN :8888 first (Settings → Public login).</p>'
+    return HTMLResponse(render_login_page(msg))
 
 
 @app.post('/login')
@@ -1780,6 +1803,8 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
         print('Auth enabled: /api/* routes require X-Auth-Token header.')
     else:
         print('WARNING: AUTH_TOKEN not set — /api/* is open. Set AUTH_TOKEN in env to lock it down.')
+
+    session_auth.warn_if_public_login_off()
 
     print(f'Starting web server on http://0.0.0.0:{port}')
 

@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
+import os
 import secrets
 import time
 from http.cookies import SimpleCookie
 
-PUBLIC_HOST = 'smoker.example.com'
+log = logging.getLogger('session_auth')
+
+# Fallback only. A real host belongs in the PUBLIC_HOST environment variable.
+PUBLIC_HOST_PLACEHOLDER = 'smoker.example.com'
 COOKIE_NAME = 'sid'
 SESSION_TTL_SECS = 7 * 24 * 3600
 PBKDF2_ROUNDS = 200_000
@@ -26,8 +31,33 @@ def request_host(host_header: str | None) -> str:
     return raw.split(':')[0]
 
 
+def public_host() -> str:
+    """Host that requires login.
+
+    PUBLIC_HOST is read on each call so tests can patch the environment.
+    The value is normalised with request_host() (lowercase, any :port
+    stripped). Unset, empty, or whitespace falls back to the placeholder.
+    """
+    normalised = request_host(os.environ.get('PUBLIC_HOST'))
+    return normalised or PUBLIC_HOST_PLACEHOLDER
+
+
 def host_is_public(host_header: str | None) -> bool:
-    return request_host(host_header) == PUBLIC_HOST
+    # Both sides use request_host(): lowercase, and any :port stripped.
+    return request_host(host_header) == public_host()
+
+
+def warn_if_public_login_off() -> None:
+    """Startup warning when remote login cannot match a real host.
+
+    LAN-only setups are valid, so this logs and returns. It does not raise.
+    """
+    configured = request_host(os.environ.get('PUBLIC_HOST'))
+    if not configured or configured == PUBLIC_HOST_PLACEHOLDER:
+        log.warning(
+            'PUBLIC_HOST is unset or still the placeholder %s; remote login is effectively off',
+            PUBLIC_HOST_PLACEHOLDER,
+        )
 
 
 def hash_password(password: str) -> tuple[str, str]:

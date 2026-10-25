@@ -23,12 +23,15 @@ services:
     # BT_ADAPTER is read by server.py as the default --adapter value. Unset to
     # let BlueZ pick the system default (usually hci0).
     environment:
-      - BT_ADAPTER=${BT_ADAPTER:-}
+      BT_ADAPTER: ${BT_ADAPTER:-}
       # AUTH_TOKEN: if set, /api/* requires header `X-Auth-Token: <value>`.
       # Leave unset for open LAN-only access (a warning is logged on startup).
-      - AUTH_TOKEN=${AUTH_TOKEN:-}
+      AUTH_TOKEN: ${AUTH_TOKEN:-}
       # CORS_ORIGINS: comma-separated list of allowed Origin headers.
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8888,http://127.0.0.1:8888,https://smoker.example.com}
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:8888,http://127.0.0.1:8888,https://smoker.example.com}"
+      # PUBLIC_HOST: in-app login applies only when the request host matches.
+      # Set the real value in an untracked .env next to this file.
+      PUBLIC_HOST: ${PUBLIC_HOST:-smoker.example.com}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8888/api/state', timeout=5)"]
       interval: 60s

@@ -1,3 +1,5 @@
+.env
+docker-compose.override.yml
 .playwright-mcp/
 data/
 __pycache__/
