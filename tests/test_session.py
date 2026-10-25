@@ -64,6 +64,17 @@ class HostGate(unittest.TestCase):
             self.assertTrue(host_is_public('SMOKER.EXAMPLE.COM:443'))
             self.assertTrue(host_is_public('Smoker.example.com:80'))
 
+    def test_env_url_keeps_the_host(self):
+        with patch.dict(os.environ, {'PUBLIC_HOST': 'https://pit.example.test'}):
+            self.assertEqual(public_host(), 'pit.example.test')
+            self.assertTrue(host_is_public('PIT.EXAMPLE.TEST:443'))
+            self.assertFalse(host_is_public('https'))
+        with patch.dict(os.environ, {'PUBLIC_HOST': 'https://pit.example.test/login'}):
+            self.assertEqual(public_host(), 'pit.example.test')
+        with patch.dict(os.environ, {'PUBLIC_HOST': 'https://SMOKER.EXAMPLE.COM:443'}):
+            self.assertEqual(public_host(), 'smoker.example.com')
+            self.assertTrue(host_is_public('smoker.example.com'))
+
 
 class PublicHostWarning(unittest.TestCase):
     def test_warns_for_placeholder_not_for_other_host(self):
@@ -81,6 +92,13 @@ class PublicHostWarning(unittest.TestCase):
         with patch.dict(os.environ, {'PUBLIC_HOST': 'smoker.test.invalid'}):
             with self.assertNoLogs('session_auth', level='WARNING'):
                 warn_if_public_login_off()
+        with patch.dict(os.environ, {'PUBLIC_HOST': 'https://smoker.test.invalid'}):
+            with self.assertNoLogs('session_auth', level='WARNING'):
+                warn_if_public_login_off()
+        with patch.dict(os.environ, {'PUBLIC_HOST': 'https://smoker.example.com'}):
+            with self.assertLogs('session_auth', level='WARNING') as captured:
+                warn_if_public_login_off()
+        self.assertTrue(any('remote login is effectively off' in line for line in captured.output))
 
 
 class Password(unittest.TestCase):
