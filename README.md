@@ -107,6 +107,8 @@ Kitchen LAN `http://203.0.113.23:8888` stays open (no login). The public host al
 
 `CORS_ORIGINS` includes `https://smoker.example.com`. `AUTH_TOKEN` is unused for this wall.
 
+`PUBLIC_HOST` is the hostname that turns on in-app login. Set it in an untracked `.env` file next to `docker-compose.yml` (Compose substitutes `${PUBLIC_HOST}` from that file). The default is the placeholder `smoker.example.com`. If the variable is unset, empty, or still that placeholder, startup logs a warning and remote login stays off; the process keeps running so a LAN-only install is valid. A request whose host is not `PUBLIC_HOST` still gets no login prompt. `.env` and `docker-compose.override.yml` are gitignored local files.
+
 PWA install icons (`/manifest.json`, `/icon-*.png`, `/apple-touch-icon.png`, `/favicon.svg`, `/service-worker.js`) stay reachable without a session so phone home-screen install does not fall back to a theme-color letter tile. Temps APIs and `/` still require login on the public host.
 
 ### ESP-32 relay

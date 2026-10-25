@@ -232,3 +232,32 @@ class PublicLogin(unittest.TestCase):
         self.assertIn("/icon-192.png", SERVER)
         self.assertIn("/manifest.json", SERVER)
         self.assertIn("/apple-touch-icon.png", SERVER)
+        self.assertIn('session_auth.warn_if_public_login_off()', SERVER)
+
+    def test_login_page_reuses_dashboard_classes(self):
+        page = SERVER.split('LOGIN_PAGE = ', 1)[1].split('def render_login_page', 1)[0]
+        for snippet in (
+            'class="modal"',
+            'class="modal-input"',
+            'class="modal-save"',
+            'class="field-label"',
+            'class="brand-mark"',
+            'content="#0E0F11"',
+            'href="/favicon.svg?v=1.4.0"',
+            'href="/icon-192.png?v=1.4.0"',
+            'href="/icon-512.png?v=1.4.0"',
+            'href="/apple-touch-icon.png?v=1.4.0"',
+            'href="/manifest.json?v=1.4.0"',
+        ):
+            self.assertIn(snippet, page)
+            self.assertIn(snippet, HTML)
+        self.assertIn('class="modal-overlay open"', page)
+        self.assertIn('__STYLE__', page)
+        self.assertIn('def _dashboard_style', SERVER)
+        self.assertIn("html.find('<style>')", SERVER)
+        self.assertIn('class="tile-status is-alert"', SERVER)
+        self.assertIn('class="modal-hint"', SERVER)
+        self.assertIn('Wrong username or password.', SERVER)
+        self.assertIn('Set a username and password on LAN :8888 first', SERVER)
+        self.assertNotIn('#f97316', page)
+        self.assertNotIn('#140c08', page)
