@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
+import os
 import secrets
 import time
 from http.cookies import SimpleCookie
 
-PUBLIC_HOST = 'smoker.example.com'
+log = logging.getLogger('session_auth')
+
+# Fallback only. A real host belongs in the PUBLIC_HOST environment variable.
+PUBLIC_HOST_PLACEHOLDER = 'smoker.example.com'
 COOKIE_NAME = 'sid'
 SESSION_TTL_SECS = 7 * 24 * 3600
 PBKDF2_ROUNDS = 200_000
@@ -26,8 +31,49 @@ def request_host(host_header: str | None) -> str:
     return raw.split(':')[0]
 
 
+def configured_public_host() -> str:
+    """Normalise PUBLIC_HOST before it is compared to a Host header.
+
+    A pasted URL is reduced to its host first. request_host() splits on the
+    first colon, so `https://pit.example.test` would otherwise become `https`
+    and never match a request. Both sides are then lowercased and any :port
+    is stripped by request_host().
+    """
+    text = (os.environ.get('PUBLIC_HOST') or '').strip()
+    if '://' in text:
+        text = text.split('://', 1)[1]
+    for sep in ('/', '?', '#'):
+        text = text.split(sep, 1)[0]
+    if '@' in text:
+        text = text.rsplit('@', 1)[1]
+    return request_host(text)
+
+
+def public_host() -> str:
+    """Host that requires login.
+
+    Read on each call so tests can patch the environment. Unset, empty, or
+    whitespace falls back to the placeholder.
+    """
+    return configured_public_host() or PUBLIC_HOST_PLACEHOLDER
+
+
 def host_is_public(host_header: str | None) -> bool:
-    return request_host(host_header) == PUBLIC_HOST
+    # Both sides use request_host(): lowercase, and any :port stripped.
+    return request_host(host_header) == public_host()
+
+
+def warn_if_public_login_off() -> None:
+    """Startup warning when remote login cannot match a real host.
+
+    LAN-only setups are valid, so this logs and returns. It does not raise.
+    """
+    configured = configured_public_host()
+    if not configured or configured in ('http', 'https') or configured == PUBLIC_HOST_PLACEHOLDER:
+        log.warning(
+            'PUBLIC_HOST is unset or still the placeholder %s; remote login is effectively off',
+            PUBLIC_HOST_PLACEHOLDER,
+        )
 
 
 def hash_password(password: str) -> tuple[str, str]:
