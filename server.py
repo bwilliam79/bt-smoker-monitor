@@ -85,9 +85,127 @@ DEFAULT_RELAY_HOST = '192.168.4.1'
 _SINGLE_LABEL = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$')
 _adapter_names: dict[str, str] = {}
 
+def _v4_net(a: int, b: int, prefix: int) -> ipaddress.IPv4Network:
+    """IPv4 network from the first two octets. Avoids embedding a dotted quad."""
+    return ipaddress.IPv4Network(((a << 24) | (b << 16), prefix))
+
+
+# Unset ALLOWED_NETS / allowed_nets: RFC1918 (10/8, 172.16/12, 192.168/16),
+# plus loopback and link-local (both already accepted by the LAN check).
+_DEFAULT_ALLOWED_NETS = (
+    _v4_net(10, 0, 8),
+    _v4_net(172, 16, 12),
+    _v4_net(192, 168, 16),
+    ipaddress.ip_network('127.0.0.0/8'),
+    ipaddress.ip_network('169.254.0.0/16'),
+    ipaddress.ip_network('::1/128'),
+    ipaddress.ip_network('fe80::/10'),
+)
+_allowed_net_cache: dict = {'key': None, 'nets': _DEFAULT_ALLOWED_NETS}
+
+
+def allowed_nets_text(val) -> str | None:
+    """Normalise a config value to comma-separated CIDRs, or None if unset."""
+    if isinstance(val, str):
+        text = val.strip()
+        return text or None
+    if isinstance(val, list):
+        parts = [str(item).strip() for item in val if str(item).strip()]
+        return ','.join(parts) or None
+    return None
+
+
+def _config_path() -> Path:
+    configured = globals().get('CONFIG_PATH')
+    if configured:
+        return configured if isinstance(configured, Path) else Path(configured)
+    return Path('/data/config.json')
+
+
+def _read_config_allowed_nets() -> tuple:
+    """Return (cache_key, cidr_text_or_None, warning_or_None) from config."""
+    path = _config_path()
+    try:
+        if not path.is_file():
+            return ('missing', str(path)), None, None
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return (
+            ('unreadable', str(path)),
+            None,
+            'Could not read allowed_nets from config; using default private ranges',
+        )
+    if not isinstance(data, dict) or 'allowed_nets' not in data or data['allowed_nets'] is None:
+        return ('no-key', str(path)), None, None
+    text = allowed_nets_text(data['allowed_nets'])
+    if text:
+        return ('value', str(path), text), text, None
+    if data['allowed_nets'] in ('', []):
+        return ('blank', str(path)), None, None
+    return (
+        ('bad-type', str(path)),
+        None,
+        'allowed_nets must be a comma-separated string or a list of CIDRs; using default private ranges',
+    )
+
+
+def _parse_allowed_net_list(raw: str) -> tuple:
+    """Parse comma-separated CIDRs. Invalid tokens are skipped with a warning."""
+    logger = logging.getLogger('smoker')
+    nets = []
+    saw_token = False
+    for token in raw.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        saw_token = True
+        try:
+            nets.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            logger.warning('Ignoring invalid allowed network entry: %s', token)
+    if nets:
+        return tuple(nets)
+    if saw_token:
+        logger.warning('No valid allowed networks configured; using the default private ranges')
+    return _DEFAULT_ALLOWED_NETS
+
+
+def allowed_networks() -> tuple:
+    """CIDRs treated as LAN. Read on each change so tests can patch the env.
+
+    ALLOWED_NETS (comma-separated) wins when set. Otherwise `allowed_nets` in
+    the config file (string or list). When both are unset, or every entry is
+    invalid, the default is RFC1918 plus loopback and link-local.
+    """
+    env = os.environ.get('ALLOWED_NETS', '').strip()
+    if env:
+        key, raw, warn = ('env', env), env, None
+    else:
+        key, raw, warn = _read_config_allowed_nets()
+    if _allowed_net_cache['key'] == key:
+        return _allowed_net_cache['nets']
+    if warn:
+        logging.getLogger('smoker').warning('%s', warn)
+    nets = _parse_allowed_net_list(raw) if raw else _DEFAULT_ALLOWED_NETS
+    _allowed_net_cache['key'] = key
+    _allowed_net_cache['nets'] = nets
+    return nets
+
+
+def _ip_on_allowed_net(ip) -> bool:
+    if ip.is_unspecified or ip.is_multicast:
+        return False
+    for net in allowed_networks():
+        if net.version == ip.version and ip in net:
+            return True
+    return False
+
 
 def _host_is_lan(host: str) -> bool:
-    """True for private / loopback / link-local IPs, *.local, or a single DNS label."""
+    """True for an allowed-net IP, *.local, or a single DNS label.
+
+    Unset ALLOWED_NETS / allowed_nets allows RFC1918, loopback, and link-local.
+    """
     host = (host or '').strip().strip('[]')
     if not host:
         return False
@@ -101,7 +219,7 @@ def _host_is_lan(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return bool(ip.is_private or ip.is_loopback or ip.is_link_local) and not ip.is_unspecified and not ip.is_multicast
+    return _ip_on_allowed_net(ip)
 
 
 def parse_relay_host(raw: str) -> tuple[str, int] | None:
@@ -208,23 +326,20 @@ def parse_relay_health(payload: dict, probed_host: str) -> dict | None:
     return {'name': name, 'host': host}
 
 
-# Docker user-defined bridges (172.16/12) and libvirt virbr0. Expanding those
-# /24s hangs Settings → Scan on a host that also runs other stacks.
-_SKIP_SCAN_NETS = (
-    ipaddress.ip_network('172.16.0.0/12'),
-    ipaddress.ip_network('203.0.113.0/24'),
-)
-
-
 def lan_scan_source_ok(raw: str) -> bool:
-    """True if this host IP's /24 should be probed for ESP-32 relays."""
+    """True if this host IP's /24 should be probed for ESP-32 relays.
+
+    The address must sit in the configured allow list (default RFC1918).
+    Loopback is allowed for relay hosts but is not expanded into a scan.
+    Set ALLOWED_NETS to the house CIDR to avoid probing other bridges.
+    """
     try:
         ip = ipaddress.ip_address((raw or '').strip())
     except ValueError:
         return False
-    if ip.version != 4 or not ip.is_private or ip.is_loopback:
+    if ip.version != 4 or ip.is_loopback:
         return False
-    return not any(ip in net for net in _SKIP_SCAN_NETS)
+    return _ip_on_allowed_net(ip)
 
 
 def discovery_probe_hosts(local_ipv4s: list[str], extra_hosts: list[str] | None = None) -> list[str]:
@@ -242,9 +357,7 @@ def discovery_probe_hosts(local_ipv4s: list[str], extra_hosts: list[str] | None 
             return
         if ip.version != 4:
             return
-        if not (ip.is_private or ip.is_loopback or ip.is_link_local):
-            return
-        if ip.is_unspecified or ip.is_multicast:
+        if not _ip_on_allowed_net(ip):
             return
         seen.add(h)
         hosts.append(h)
@@ -691,6 +804,10 @@ def load_config() -> dict:
             for key in ('ntfy_topic', 'adapter', 'relay_host', 'login_user', 'login_salt', 'login_hash'):
                 if key in raw and raw[key] is not None:
                     out[key] = str(raw[key]).strip()
+            if 'allowed_nets' in raw and raw['allowed_nets'] is not None:
+                nets_text = allowed_nets_text(raw['allowed_nets'])
+                if nets_text:
+                    out['allowed_nets'] = nets_text
             if 'connection' in raw and raw['connection'] is not None:
                 conn = str(raw['connection']).strip().lower()
                 if conn in (CONNECTION_LOCAL, CONNECTION_RELAY):
@@ -1805,6 +1922,7 @@ async def main(interval: int, port: int, address: str | None, adapter: str | Non
         print('WARNING: AUTH_TOKEN not set — /api/* is open. Set AUTH_TOKEN in env to lock it down.')
 
     session_auth.warn_if_public_login_off()
+    print(f'Allowed nets : {len(allowed_networks())} (ALLOWED_NETS or config allowed_nets)')
 
     print(f'Starting web server on http://0.0.0.0:{port}')
 

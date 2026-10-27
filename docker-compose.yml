@@ -29,6 +29,10 @@ services:
       AUTH_TOKEN: ${AUTH_TOKEN:-}
       # CORS_ORIGINS: comma-separated list of allowed Origin headers.
       CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:8888,http://127.0.0.1:8888,https://smoker.example.com}"
+      # ALLOWED_NETS: comma-separated CIDRs treated as LAN (relay host + discovery).
+      # Unset = RFC1918 (10/8, 172.16/12, 192.168/16) plus loopback.
+      # Example: 192.168.x.0/24
+      ALLOWED_NETS: ${ALLOWED_NETS:-}
       # PUBLIC_HOST: in-app login applies only when the request host matches.
       # Set the real value in an untracked .env next to this file.
       PUBLIC_HOST: ${PUBLIC_HOST:-smoker.example.com}

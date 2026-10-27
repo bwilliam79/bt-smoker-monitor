@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
+import os
 import re
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -27,6 +30,9 @@ def load_helpers():
         're': re,
         'urlparse': urlparse,
         'json': json,
+        'os': os,
+        'logging': logging,
+        'Path': Path,
     }
     src = 'from __future__ import annotations\n' + text[i:j]
     exec(compile(src, 'server.py', 'exec'), ns, ns)
@@ -34,6 +40,69 @@ def load_helpers():
 
 
 H = load_helpers()
+# Don't let a developer config file or env var change the default these tests expect.
+os.environ.pop('ALLOWED_NETS', None)
+H['CONFIG_PATH'] = Path('/no/such/smoker-config.json')
+
+# RFC 5737 documentation ranges. Not RFC1918, so they are allowed only when configured.
+DOC_NETS = '192.0.2.0/24,198.51.100.0/24,203.0.113.0/24'
+_MISSING_CONFIG = Path('/no/such/smoker-config.json')
+
+
+@contextmanager
+def set_allowed_nets(value: str | None):
+    """Set ALLOWED_NETS for one assertion and drop the parse cache."""
+    old = os.environ.get('ALLOWED_NETS')
+    if value is None:
+        os.environ.pop('ALLOWED_NETS', None)
+    else:
+        os.environ['ALLOWED_NETS'] = value
+    H['_allowed_net_cache']['key'] = None
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop('ALLOWED_NETS', None)
+        else:
+            os.environ['ALLOWED_NETS'] = old
+        H['_allowed_net_cache']['key'] = None
+
+
+@contextmanager
+def default_allowed_nets():
+    """Unset env and point config at a missing file so the RFC1918 default applies."""
+    had = 'CONFIG_PATH' in H
+    old = H.get('CONFIG_PATH')
+    H['CONFIG_PATH'] = _MISSING_CONFIG
+    try:
+        with set_allowed_nets(None):
+            yield
+    finally:
+        if had:
+            H['CONFIG_PATH'] = old
+        else:
+            H.pop('CONFIG_PATH', None)
+        H['_allowed_net_cache']['key'] = None
+
+
+@contextmanager
+def config_allowed_nets(val):
+    """Write allowed_nets into a temp config file and clear ALLOWED_NETS."""
+    had = 'CONFIG_PATH' in H
+    old = H.get('CONFIG_PATH')
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'config.json'
+        path.write_text(json.dumps({'allowed_nets': val}), encoding='utf-8')
+        H['CONFIG_PATH'] = path
+        try:
+            with set_allowed_nets(None):
+                yield
+        finally:
+            if had:
+                H['CONFIG_PATH'] = old
+            else:
+                H.pop('CONFIG_PATH', None)
+            H['_allowed_net_cache']['key'] = None
 
 
 def make_pkt(set_point, grill, t0, t1, p0, p1, extra=0):
@@ -137,10 +206,95 @@ class RelayHostTests(unittest.TestCase):
         self.assertIsNotNone(H['parse_relay_host']('smoker-relay'))
 
     def test_lan_check_on_ips(self):
-        self.assertTrue(H['relay_host_is_allowed']('192.168.4.1'))
-        self.assertTrue(H['relay_host_is_allowed']('192.0.2.3:80'))
-        self.assertFalse(H['relay_host_is_allowed']('8.8.8.8'))
-        self.assertFalse(H['relay_host_is_allowed'](''))
+        with default_allowed_nets():
+            self.assertTrue(H['relay_host_is_allowed']('192.168.4.1'))
+            self.assertFalse(H['relay_host_is_allowed']('8.8.8.8'))
+            self.assertFalse(H['relay_host_is_allowed'](''))
+        with set_allowed_nets('192.0.2.0/24'):
+            self.assertTrue(H['relay_host_is_allowed']('192.0.2.15:80'))
+            self.assertFalse(H['relay_host_is_allowed']('198.51.100.15'))
+
+    def test_default_allows_each_rfc1918_range_and_rejects_public(self):
+        with default_allowed_nets():
+            nets = [n for n in H['allowed_networks']() if n.version == 4]
+            blocks = {(n.network_address.packed[0], n.network_address.packed[1]): n.prefixlen for n in nets}
+            self.assertEqual(blocks[(10, 0)], 8)
+            self.assertEqual(blocks[(172, 16)], 12)
+            self.assertEqual(blocks[(192, 168)], 16)
+            self.assertTrue(H['relay_host_is_allowed']('10.0.0.8'))
+            self.assertTrue(H['relay_host_is_allowed']('10.10.10.1'))
+            self.assertTrue(H['relay_host_is_allowed']('172.16.3.9'))
+            self.assertTrue(H['relay_host_is_allowed']('172.18.0.4'))
+            self.assertTrue(H['relay_host_is_allowed']('192.168.4.1'))
+            self.assertTrue(H['relay_host_is_allowed']('192.168.77.4'))
+            self.assertTrue(H['lan_scan_source_ok']('10.0.0.8'))
+            self.assertTrue(H['lan_scan_source_ok']('172.16.3.9'))
+            self.assertTrue(H['lan_scan_source_ok']('172.18.0.4'))
+            self.assertTrue(H['lan_scan_source_ok']('192.168.77.4'))
+            self.assertTrue(H['relay_host_is_allowed']('127.0.0.1'))
+            self.assertFalse(H['lan_scan_source_ok']('127.0.0.1'))
+            self.assertFalse(H['relay_host_is_allowed']('8.8.8.8'))
+            self.assertFalse(H['relay_host_is_allowed']('203.0.113.10'))
+            self.assertFalse(H['lan_scan_source_ok']('203.0.113.10'))
+            self.assertFalse(H['lan_scan_source_ok']('192.0.2.23'))
+
+    def test_custom_config_restricts_to_cidr(self):
+        with set_allowed_nets('198.51.100.0/24'):
+            self.assertTrue(H['relay_host_is_allowed']('198.51.100.20'))
+            self.assertTrue(H['lan_scan_source_ok']('198.51.100.20'))
+            self.assertFalse(H['relay_host_is_allowed']('192.0.2.10'))
+            self.assertFalse(H['relay_host_is_allowed']('10.0.0.8'))
+            self.assertFalse(H['relay_host_is_allowed']('172.16.3.9'))
+            self.assertFalse(H['relay_host_is_allowed']('8.8.8.8'))
+            self.assertFalse(H['relay_host_is_allowed']('169.254.10.2'))
+            self.assertFalse(H['lan_scan_source_ok']('10.0.0.8'))
+
+    def test_config_file_restricts_to_cidr(self):
+        with config_allowed_nets(['203.0.113.0/24']):
+            self.assertTrue(H['relay_host_is_allowed']('203.0.113.5'))
+            self.assertTrue(H['lan_scan_source_ok']('203.0.113.5'))
+            self.assertFalse(H['relay_host_is_allowed']('10.10.10.7'))
+            self.assertFalse(H['relay_host_is_allowed']('192.0.2.10'))
+
+    def test_env_overrides_config_file(self):
+        had = 'CONFIG_PATH' in H
+        old = H.get('CONFIG_PATH')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            path.write_text(json.dumps({'allowed_nets': '203.0.113.0/24'}), encoding='utf-8')
+            H['CONFIG_PATH'] = path
+            try:
+                with set_allowed_nets('192.0.2.0/24'):
+                    self.assertTrue(H['relay_host_is_allowed']('192.0.2.8'))
+                    self.assertFalse(H['relay_host_is_allowed']('203.0.113.5'))
+            finally:
+                if had:
+                    H['CONFIG_PATH'] = old
+                else:
+                    H.pop('CONFIG_PATH', None)
+                H['_allowed_net_cache']['key'] = None
+
+    def test_invalid_allowed_nets_entries_skipped(self):
+        with set_allowed_nets('not-a-cidr, 198.51.100.0/24, 999.1.1.1/24'):
+            with self.assertLogs('smoker', level='WARNING') as captured:
+                self.assertTrue(H['relay_host_is_allowed']('198.51.100.9'))
+            text = '\n'.join(captured.output)
+            self.assertIn('not-a-cidr', text)
+            self.assertIn('999.1.1.1/24', text)
+            self.assertFalse(H['relay_host_is_allowed']('10.0.0.1'))
+            self.assertFalse(H['relay_host_is_allowed']('203.0.113.9'))
+
+    def test_all_invalid_allowed_nets_fall_back_to_default(self):
+        with set_allowed_nets('nope, still-nope'):
+            with self.assertLogs('smoker', level='WARNING') as captured:
+                self.assertTrue(H['relay_host_is_allowed']('10.0.0.8'))
+            text = '\n'.join(captured.output)
+            self.assertIn('nope', text)
+            self.assertIn('default private ranges', text)
+            self.assertTrue(H['relay_host_is_allowed']('172.18.0.1'))
+            self.assertTrue(H['relay_host_is_allowed']('192.168.4.1'))
+            self.assertFalse(H['relay_host_is_allowed']('8.8.8.8'))
+            self.assertFalse(H['relay_host_is_allowed']('192.0.2.1'))
 
     def test_reading_url(self):
         self.assertEqual(
@@ -155,6 +309,13 @@ class RelayHostTests(unittest.TestCase):
 
 
 class RelayHealthTests(unittest.TestCase):
+    def setUp(self):
+        self._nets = set_allowed_nets(DOC_NETS)
+        self._nets.__enter__()
+
+    def tearDown(self):
+        self._nets.__exit__(None, None, None)
+
     def test_health_url(self):
         self.assertEqual(H['relay_health_url']('203.0.113.118'), 'http://203.0.113.118/health')
         self.assertIsNone(H['relay_health_url']('8.8.8.8'))
@@ -202,19 +363,21 @@ class RelayHealthTests(unittest.TestCase):
         self.assertNotIn('8.8.8.8', hosts)
         self.assertTrue(all(h.startswith(('192.0.2.', '203.0.113.')) for h in hosts))
 
-    def test_skips_docker_and_libvirt_slash24s(self):
-        hosts = H['discovery_probe_hosts'](
-            ['172.17.0.1', '203.0.113.1', '192.0.2.23'],
-            ['203.0.113.118'],
-        )
-        self.assertIn('203.0.113.118', hosts)
-        self.assertIn('192.0.2.1', hosts)
-        self.assertTrue(all(h.startswith(('192.0.2.', '203.0.113.')) for h in hosts))
-        self.assertFalse(any(h.startswith('172.17.') for h in hosts))
-        self.assertFalse(any(h.startswith('203.0.113.') for h in hosts))
-        self.assertFalse(H['lan_scan_source_ok']('172.17.0.1'))
-        self.assertFalse(H['lan_scan_source_ok']('203.0.113.1'))
-        self.assertTrue(H['lan_scan_source_ok']('192.0.2.23'))
+    def test_custom_nets_limit_discovery(self):
+        # Documentation ranges stand in for a house LAN. Other ranges are not scanned.
+        with set_allowed_nets('192.0.2.0/24,203.0.113.0/24'):
+            hosts = H['discovery_probe_hosts'](
+                ['172.17.0.1', '198.51.100.1', '192.0.2.23'],
+                ['203.0.113.118'],
+            )
+            self.assertIn('203.0.113.118', hosts)
+            self.assertIn('192.0.2.1', hosts)
+            self.assertTrue(all(h.startswith(('192.0.2.', '203.0.113.')) for h in hosts))
+            self.assertFalse(any(h.startswith('172.17.') for h in hosts))
+            self.assertFalse(any(h.startswith('198.51.100.') for h in hosts))
+            self.assertFalse(H['lan_scan_source_ok']('172.17.0.1'))
+            self.assertFalse(H['lan_scan_source_ok']('198.51.100.1'))
+            self.assertTrue(H['lan_scan_source_ok']('192.0.2.23'))
 
 
 if __name__ == '__main__':
