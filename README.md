@@ -181,6 +181,7 @@ Smoker, Probe 1, and Probe 2 share one tile (label, big reading, target at the t
 ### Alarms
 
 - **Probe reaches target** — voice announcement + push notification. Re-fires if probe drops 5°F below target and climbs back.
+- **Smoker under temperature** — after the smoker has reached its set point (any reading at or above set point − 5°F, including an overshoot), a drop more than 10°F below fires the siren; a page reload during a drop still alarms.
 - **Probe over temperature** — siren repeating every 30 seconds + push notification. Clears automatically when temp drops back within range.
 - **Smoker over temperature** — same behaviour as probes.
 

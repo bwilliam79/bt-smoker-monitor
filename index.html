@@ -1411,6 +1411,18 @@ function announce(msg) {
   speechSynthesis.speak(utt);
 }
 
+// True if any reading since the newest set point change was at or above
+// set point - 5.
+function smokerReachedSetPoint(points) {
+  if (!points.length) return false;
+  const sp = points[points.length - 1].setPoint;
+  for (let i = points.length - 1; i >= 0; i--) {
+    if (points[i].setPoint !== sp) break;
+    if (points[i].grill >= sp - 5) return true;
+  }
+  return false;
+}
+
 function checkAlarms(d) {
   // Smoker off / cooldown: skip all grill alarms so a hot grill after the
   // user powers down doesn't fire the over-temp siren, and so a cold grill
@@ -1439,6 +1451,9 @@ function checkAlarms(d) {
       clearGrillOverTempAlarm();
     }
     // Smoker under-temp: only after having reached set point; fires when >10° below.
+    // "Reached" counts any reading at or above set point - 5, including an
+    // overshoot that skipped the ±5 band between ticks.
+    if (d.grill >= d.setPoint - 5) grillReachedOnce = true;
     if (grillReachedOnce && !grillUnderTempFired && d.grill < d.setPoint - 10) {
       grillUnderTempFired = true;
       startGrillUnderTempAlarm();
@@ -1596,11 +1611,11 @@ function connect() {
         if (latest.setPoint > 0) {
           grillAlarmFired     = Math.abs(latest.grill - latest.setPoint) <= 5;
           grillOverTempFired  = latest.grill > latest.setPoint + 25;
-          // Best-effort: treat "within band of target" as having reached it.
-          // False negatives just mean the under-temp siren waits for the next
-          // at-temp event before arming; safer than a spurious fire on reload.
-          grillReachedOnce    = latest.grill >= latest.setPoint - 5;
-          grillUnderTempFired = grillReachedOnce && latest.grill < latest.setPoint - 10;
+          // Armed if any restored reading at this set point reached it, so a
+          // reload during a temperature drop still alarms. Under-temp is left
+          // un-fired so the next live tick sounds it if the drop persists.
+          grillReachedOnce    = smokerReachedSetPoint(d.data);
+          grillUnderTempFired = false;
         } else {
           grillAlarmFired     = false;
           grillOverTempFired  = false;
