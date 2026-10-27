@@ -185,7 +185,7 @@ Smoker, Probe 1, and Probe 2 share one tile (label, big reading, target at the t
 - **Probe over temperature** — siren repeating every 30 seconds + push notification. Clears automatically when temp drops back within range.
 - **Smoker over temperature** — same behaviour as probes.
 
-- **Silence alarm** — while a siren is repeating, a red **Silence alarm** button appears at the bottom of the page. It stops the siren for the alarms active now; the on-screen alarm stays until the reading recovers, and an alarm that clears and fires again sounds again.
+- **Silence alarm** — while a siren is repeating, a red **Silence alarm** button appears at the bottom of the page. If the page hasn't been tapped since it loaded (browsers block sound until then), the button reads **Tap to hear alarm** and turns the sound on first. It stops the siren for the alarms active now; the on-screen alarm stays until the reading recovers, and an alarm that clears and fires again sounds again.
 
 > **Note:** Browsers require a user interaction before playing audio. Tap/click the page once after loading to ensure alarms sound.
 

@@ -1338,11 +1338,22 @@ function anySirenActive() {
   return !!(grillOverTempInterval || grillUnderTempInterval ||
             overTempInterval[0] || overTempInterval[1]);
 }
+// Browsers keep audio off until the page is tapped once after loading. While
+// an alarm is active and audio is still locked, the button offers to turn the
+// sound on instead of silencing.
 function updateSilenceBtn() {
   const b = document.getElementById('silenceBtn');
-  if (b) b.classList.toggle('show', anySirenActive());
+  if (!b) return;
+  b.classList.toggle('show', anySirenActive());
+  b.textContent = audioCtx ? 'Silence alarm' : 'Tap to hear alarm';
 }
 function silenceAlarms() {
+  if (!audioCtx) {          // first tap: unlock audio and sound the alarm now
+    unlockAudio();
+    playSiren();
+    updateSilenceBtn();
+    return;
+  }
   clearInterval(grillOverTempInterval);  grillOverTempInterval  = null;
   clearInterval(grillUnderTempInterval); grillUnderTempInterval = null;
   for (let i = 0; i < 2; i++) { clearInterval(overTempInterval[i]); overTempInterval[i] = null; }
@@ -1364,6 +1375,7 @@ function unlockAudio() {
     if (AC) audioCtx = new AC();
   }
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  if (typeof updateSilenceBtn === 'function') updateSilenceBtn();
   // Browsers only honour Notification.requestPermission() from inside a user
   // gesture; piggyback on the same unlock that enables audio.
   if ('Notification' in window && Notification.permission === 'default') {

@@ -19,6 +19,7 @@ function mk(){ const c=new Set(); return {textContent:'', classList:{add:x=>c.ad
 const document = { getElementById: id => (els[id] ||= mk()) };
 let sirens = 0; function playSiren(){ sirens++; }
 const window = {};
+let audioCtx = {}; function unlockAudio(){}
 const timers = new Set(); let tid = 1;
 globalThis.setInterval = () => { const t = tid++; timers.add(t); return t; };
 globalThis.clearInterval = t => timers.delete(t);
@@ -38,3 +39,28 @@ console.log(JSON.stringify(r));
     r = json.loads(subprocess.run(['node', '-e', js], capture_output=True, text=True, check=True).stdout)
     assert r == {'shownWhileActive': True, 'timersBefore': 2, 'timersAfter': 0,
                  'hiddenAfter': True, 'stillAlertVisual': True, 'refires': True}
+
+
+@pytest.mark.skipif(not shutil.which('node'), reason='node not installed')
+def test_locked_audio_first_tap_plays_instead_of_silencing():
+    js = """
+const els = {};
+function mk(){ const c=new Set(); return {textContent:'', classList:{add:x=>c.add(x),remove:x=>c.delete(x),toggle:(x,on)=>on?c.add(x):c.delete(x),has:x=>c.has(x)}}; }
+const document = { getElementById: id => (els[id] ||= mk()) };
+const window = {};
+let audioCtx = null; function unlockAudio(){ audioCtx = {}; }
+let sirens = 0; function playSiren(){ sirens++; }
+const timers = new Set(); let tid = 1;
+globalThis.setInterval = () => { const t = tid++; timers.add(t); return t; };
+globalThis.clearInterval = t => timers.delete(t);
+""" + _slice('// ── Alarms', '// AudioContext is created lazily') + """
+startGrillOverTempAlarm();
+const r = {label1: els.silenceBtn.textContent};
+silenceAlarms();
+r.label2 = els.silenceBtn.textContent; r.timers = timers.size; r.sirens = sirens;
+silenceAlarms();
+r.timersAfter = timers.size;
+console.log(JSON.stringify(r));
+"""
+    r = json.loads(subprocess.run(['node', '-e', js], capture_output=True, text=True, check=True).stdout)
+    assert r == {'label1': 'Tap to hear alarm', 'label2': 'Silence alarm', 'timers': 1, 'sirens': 2, 'timersAfter': 0}
