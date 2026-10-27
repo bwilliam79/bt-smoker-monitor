@@ -55,6 +55,8 @@
     }
     button, input, select { font-family: inherit; }
     button { color: inherit; }
+    .silence-btn { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 50; display: none; padding: 12px 22px; border-radius: 999px; border: 1px solid rgba(255, 90, 82, 0.6); background: #2a1514; color: var(--alert); font: inherit; font-weight: 600; font-size: 16px; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,0.5); }
+    .silence-btn.show { display: block; }
     :focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ember); }
 
     .app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; min-width: 0; }
@@ -539,6 +541,7 @@
           </div>
         </div>
         <div class="tile-status" id="grillStatus"><span id="grillAtTempTimer"></span></div>
+        <button type="button" class="silence-btn" id="silenceBtn" onclick="silenceAlarms()">Silence alarm</button>
       </article>
       <article class="temp-card probe" id="cardP1">
         <div class="tile-top">
@@ -996,10 +999,10 @@ const CHART_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 // Chart point spacing is decoupled from the server poll interval so the line
 // doesn't get cluttered with a dot per tick. Dashboard/alarm logic still runs
 // on every tick — only the plotted line is thinned. Points are snapped to
-// wall-clock marks (:00, :05, :10, …) rather than "N minutes since the last
+// wall-clock minute marks rather than "N minutes since the last
 // plotted point" so the line lands on clean marks instead of drifting off
 // them based on when data collection happened to start.
-const CHART_POINT_MIN_GAP_MS = 5 * 60 * 1000; // 5 minutes
+const CHART_POINT_MIN_GAP_MS = 60 * 1000; // 1 minute (was 5; 1,440 points per 24 h is fine)
 const chartLabels     = [];
 const chartTimestamps = [];
 let chartTailIsLive = false;
@@ -1298,12 +1301,14 @@ function startGrillOverTempAlarm() {
   document.getElementById('cardGrill').classList.add('over-temp-grill');
   playSiren();
   grillOverTempInterval = setInterval(playSiren, 30_000);
+  updateSilenceBtn();
 }
 
 function clearGrillOverTempAlarm() {
   clearInterval(grillOverTempInterval);
   grillOverTempInterval = null;
   grillOverTempFired    = false;
+  updateSilenceBtn();
   document.getElementById('cardGrill').classList.remove('over-temp-grill');
   markGrillStatus(null);
   document.getElementById('grillAtTempTimer').textContent = '';
@@ -1313,24 +1318,47 @@ function startOverTempAlarm(i) {
   if (overTempInterval[i]) return;
   playSiren();
   overTempInterval[i] = setInterval(playSiren, 30_000);
+  updateSilenceBtn();
 }
 
 function clearOverTempAlarm(i) {
   clearInterval(overTempInterval[i]);
   overTempInterval[i] = null;
   overTempFired[i] = false;
+  updateSilenceBtn();
 }
 
 function startGrillUnderTempAlarm() {
   if (grillUnderTempInterval) return;
   playSiren();
   grillUnderTempInterval = setInterval(playSiren, 30_000);
+  updateSilenceBtn();
 }
 
 function clearGrillUnderTempAlarm() {
   clearInterval(grillUnderTempInterval);
   grillUnderTempInterval = null;
   grillUnderTempFired    = false;
+  updateSilenceBtn();
+}
+
+// Silence: stops the repeating sirens for the alarms that are active now.
+// The visual alarm state stays until the reading recovers; an alarm that
+// clears and fires again later sounds again.
+function anySirenActive() {
+  return !!(grillOverTempInterval || grillUnderTempInterval ||
+            overTempInterval[0] || overTempInterval[1]);
+}
+function updateSilenceBtn() {
+  const b = document.getElementById('silenceBtn');
+  if (b) b.classList.toggle('show', anySirenActive());
+}
+function silenceAlarms() {
+  clearInterval(grillOverTempInterval);  grillOverTempInterval  = null;
+  clearInterval(grillUnderTempInterval); grillUnderTempInterval = null;
+  for (let i = 0; i < 2; i++) { clearInterval(overTempInterval[i]); overTempInterval[i] = null; }
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  updateSilenceBtn();
 }
 
 // AudioContext is created lazily on the first user gesture — Safari warns when

@@ -161,7 +161,7 @@ Connect and disconnect alerts are **edge-triggered**. Online→offline fires one
 | **Smoker tile** | Current grill temp, read-only set point, "At temp for …" / over / under. No ETA |
 | **Probe 1 tile** | Current probe temp, editable alert target, ETA or stall. "—" when the probe is disconnected |
 | **Probe 2 tile** | Same as Probe 1 |
-| **Chart** | 24-hour scrolling history with dashed target lines |
+| **Chart** | 24-hour scrolling history with dashed target lines; one point per minute plus a live end point, so the line shows from the second reading |
 | **Log panel** | Collapsed by default. Connection events, alarms, and setting changes. Info strip is inside the log body |
 
 ### Pit Instrument (v1.4.0)
@@ -183,6 +183,8 @@ Smoker, Probe 1, and Probe 2 share one tile (label, big reading, target at the t
 - **Probe reaches target** — voice announcement + push notification. Re-fires if probe drops 5°F below target and climbs back.
 - **Probe over temperature** — siren repeating every 30 seconds + push notification. Clears automatically when temp drops back within range.
 - **Smoker over temperature** — same behaviour as probes.
+
+- **Silence alarm** — while a siren is repeating, a red **Silence alarm** button appears at the bottom of the page. It stops the siren for the alarms active now; the on-screen alarm stays until the reading recovers, and an alarm that clears and fires again sounds again.
 
 > **Note:** Browsers require a user interaction before playing audio. Tap/click the page once after loading to ensure alarms sound.
 

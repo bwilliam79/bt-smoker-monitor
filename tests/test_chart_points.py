@@ -14,9 +14,9 @@ def _extract():
 
 @pytest.mark.skipif(not shutil.which('node'), reason='node not installed')
 def test_fresh_cook_draws_line_and_buckets():
-    # 30 s ticks starting 4 min into a bucket, with the :05 tick missed.
-    base = 1793138700  # multiple of 300
-    ticks = [base + 240, base + 270, base + 300 + 30, base + 300 + 60, base + 600, base + 630]
+    # Ticks inside 1-minute buckets, with the on-the-minute tick missed once.
+    base = 1793138700  # multiple of 60
+    ticks = [base + 40, base + 50, base + 60 + 10, base + 60 + 20, base + 120, base + 125]
     js = f"""
 const CHART_WINDOW_MS = 24*3600*1000, PROBE_DISCONNECTED = 999;
 const chart = {{ update(){{}} }}; function syncChartEmpty(){{}}
@@ -31,9 +31,9 @@ for (const t of {json.dumps(ticks)}) {{
 console.log(JSON.stringify(out));
 """
     res = json.loads(subprocess.run(['node', '-e', js], capture_output=True, text=True, check=True).stdout)
-    assert res[0] == [base + 240]
-    assert res[1] == [base + 240, base + 270]           # 2 points -> a line
-    assert res[2] == [base + 240, base + 330]           # missed :05 tick, first in bucket kept
-    assert res[3] == [base + 240, base + 330, base + 360]
-    assert res[4] == [base + 240, base + 330, base + 600]
-    assert res[5] == [base + 240, base + 330, base + 600, base + 630]
+    assert res[0] == [base + 40]
+    assert res[1] == [base + 40, base + 50]             # 2 points -> a line
+    assert res[2] == [base + 40, base + 70]             # missed :00 tick, first in bucket kept
+    assert res[3] == [base + 40, base + 70, base + 80]
+    assert res[4] == [base + 40, base + 70, base + 120]
+    assert res[5] == [base + 40, base + 70, base + 120, base + 125]
