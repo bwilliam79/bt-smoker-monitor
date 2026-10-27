@@ -777,7 +777,7 @@ async function clearChart() {
   try {
     const res = await fetch('/api/clear-history', { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    chartTimestamps.length = 0;
+    chartTimestamps.length = 0; chartTailIsLive = false; chartLastBucket = -Infinity;
     chartLabels.length = 0;
     Object.values(DS).forEach(arr => arr.length = 0);
     chart.update();
@@ -1002,6 +1002,8 @@ const CHART_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CHART_POINT_MIN_GAP_MS = 5 * 60 * 1000; // 5 minutes
 const chartLabels     = [];
 const chartTimestamps = [];
+let chartTailIsLive = false;
+let chartLastBucket = -Infinity;
 const DS = {
   grill:       [],
   grillTarget: [],
@@ -1064,8 +1066,20 @@ function pushChartPoint(d, date = new Date(), skipUpdate = false) {
   // Poll ticks land on exact multiples of the poll interval (server.py aligns
   // to wall-clock ticks), so as long as the interval divides CHART_POINT_MIN_GAP_MS
   // evenly, one tick per bucket lands exactly on the mark — accept only that one.
-  if (ts % CHART_POINT_MIN_GAP_MS !== 0) return;
+  // Keep the first reading in each 5-minute bucket (normally the :05 tick, but
+  // a missed tick no longer drops the whole bucket), and always draw the newest
+  // reading as a live tail point that the next reading replaces. Without the
+  // tail a fresh cook showed 0-1 points for up to 10 minutes and, with
+  // pointRadius 0, no line at all.
   if (chartTimestamps.length && ts <= chartTimestamps[chartTimestamps.length - 1]) return;
+  if (chartTailIsLive && chartTimestamps.length) {
+    chartTimestamps.pop();
+    chartLabels.pop();
+    Object.values(DS).forEach(arr => arr.pop());
+  }
+  const bucket = Math.floor(ts / CHART_POINT_MIN_GAP_MS);
+  chartTailIsLive = bucket <= chartLastBucket;
+  if (!chartTailIsLive) chartLastBucket = bucket;
   chartTimestamps.push(ts);
   chartLabels.push(fmtTime(date));
   DS.grill.push(d.grill);
@@ -1494,7 +1508,7 @@ function connect() {
   ws.onmessage = ({ data }) => {
     const d = JSON.parse(data);
     if (d.type === 'clear_history') {
-      chartTimestamps.length = 0;
+      chartTimestamps.length = 0; chartTailIsLive = false; chartLastBucket = -Infinity;
       chartLabels.length = 0;
       Object.values(DS).forEach(arr => arr.length = 0);
       chart.update();
@@ -1508,7 +1522,7 @@ function connect() {
       // without this, restored points get appended after live ticks from the
       // previous session, producing duplicates and non-monotonic timestamps
       // that the newest-ts trim logic won't clean up.
-      chartTimestamps.length = 0;
+      chartTimestamps.length = 0; chartTailIsLive = false; chartLastBucket = -Infinity;
       chartLabels.length = 0;
       Object.values(DS).forEach(arr => arr.length = 0);
 
