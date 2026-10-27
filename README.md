@@ -161,7 +161,7 @@ Connect and disconnect alerts are **edge-triggered**. Online→offline fires one
 | **Smoker tile** | Current grill temp, read-only set point, "At temp for …" / over / under. No ETA |
 | **Probe 1 tile** | Current probe temp, editable alert target, ETA or stall. "—" when the probe is disconnected |
 | **Probe 2 tile** | Same as Probe 1 |
-| **Chart** | 24-hour scrolling history with dashed target lines; one point on each minute mark plus a live end point, so the line shows from the second reading |
+| **Chart** | 24-hour scrolling history with dashed target lines; one point on each minute mark |
 | **Log panel** | Collapsed by default. Connection events, alarms, and setting changes. Info strip is inside the log body |
 
 ### Pit Instrument (v1.4.0)
