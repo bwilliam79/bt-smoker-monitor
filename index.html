@@ -1336,8 +1336,8 @@ function clearGrillUnderTempAlarm() {
 // Silence: each alarming card gets its own button that stops that card's
 // repeating siren. The on-screen alarm stays until the reading recovers; an
 // alarm that clears and fires again sounds again. Browsers keep audio off
-// until the page is tapped once after loading, so while audio is still locked
-// the button reads "Tap to hear alarm" and turns the sound on instead.
+// until the page is tapped once after loading; any tap anywhere unlocks audio
+// (see onFirstGesture), so this button only ever silences.
 const SILENCE_BTNS = [['grill', 'silenceBtnGrill'], [0, 'silenceBtnP1'], [1, 'silenceBtnP2']];
 function sirenActive(k) {
   return k === 'grill' ? !!(grillOverTempInterval || grillUnderTempInterval)
@@ -1351,16 +1351,10 @@ function updateSilenceBtn() {
     const b = document.getElementById(id);
     if (!b) continue;
     b.classList.toggle('show', sirenActive(k));
-    b.textContent = audioCtx ? 'Silence alarm' : 'Tap to hear alarm';
+    b.textContent = 'Silence alarm';
   }
 }
 function silenceAlarms(k) {
-  if (!audioCtx) {          // first tap: unlock audio and sound the alarm now
-    unlockAudio();
-    playSiren();
-    updateSilenceBtn();
-    return;
-  }
   if (k === 'grill') {
     clearInterval(grillOverTempInterval);  grillOverTempInterval  = null;
     clearInterval(grillUnderTempInterval); grillUnderTempInterval = null;
@@ -1392,8 +1386,22 @@ function unlockAudio() {
     try { Notification.requestPermission(); } catch {}
   }
 }
-document.addEventListener('click',    unlockAudio, { once: false });
-document.addEventListener('touchend', unlockAudio, { once: false });
+// Any tap, click or key anywhere unlocks audio (capture phase, so it runs
+// before any button handler). If an alarm is already active, the siren starts
+// right away — unless the gesture was on a Silence button, where silencing wins.
+// It never silences anything.
+const GESTURES = ['pointerdown', 'touchstart', 'keydown'];
+function onFirstGesture(e) {
+  GESTURES.forEach(t => document.removeEventListener(t, onFirstGesture, true));
+  unlockAudio();
+  const onSilence = e && e.target && e.target.closest && e.target.closest('.silence-btn');
+  if (!onSilence && typeof anySirenActive === 'function' && anySirenActive()) playSiren();
+}
+GESTURES.forEach(t => document.addEventListener(t, onFirstGesture, { capture: true, passive: true }));
+// Later gestures just resume a context iOS may have suspended.
+document.addEventListener('pointerdown', () => {
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}, { passive: true });
 
 function showNotif(title, body, tag) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;

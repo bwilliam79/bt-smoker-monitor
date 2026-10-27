@@ -1,4 +1,4 @@
-"""Per-card Silence buttons stop that card's siren; locked audio plays first."""
+"""Per-card Silence buttons stop that card's siren; button only silences; any tap unlocks audio."""
 import json, shutil, subprocess
 from pathlib import Path
 import pytest
@@ -49,13 +49,41 @@ console.log(JSON.stringify({a, b, after: timers.size, refires: sirens === s0 + 1
     assert r['after'] == 1 and r['refires'] is True
 
 @node
-def test_locked_audio_first_tap_plays_instead_of_silencing():
+def test_silence_button_always_silences_even_when_locked():
     r = _run("""
-startGrillOverTempAlarm();
-const label1 = els.silenceBtnGrill.textContent;
+startGrillOverTempAlarm(); const s0 = sirens;
+const label = els.silenceBtnGrill.textContent;
 silenceAlarms('grill');
-const r = {label1, label2: els.silenceBtnGrill.textContent, timers: timers.size, sirens};
-silenceAlarms('grill'); r.timersAfter = timers.size;
-console.log(JSON.stringify(r));
+console.log(JSON.stringify({label, timers: timers.size, extra: sirens - s0}));
 """, locked=True)
-    assert r == {'label1': 'Tap to hear alarm', 'label2': 'Silence alarm', 'timers': 1, 'sirens': 2, 'timersAfter': 0}
+    assert r == {'label': 'Silence alarm', 'timers': 0, 'extra': 0}
+
+def test_no_tap_to_hear_label():
+    assert 'Tap to hear alarm' not in HTML
+
+def _gesture_js(target_silence):
+    return """
+const listeners = {};
+const document = { addEventListener:(t,f)=>(listeners[t] ||= []).push(f),
+                   removeEventListener:(t,f)=>listeners[t]=(listeners[t]||[]).filter(g=>g!==f) };
+let audioCtx = null, sirens = 0, active = true;
+function unlockAudio(){ audioCtx = {}; }
+function playSiren(){ if (audioCtx) sirens++; }
+function anySirenActive(){ return active; }
+""" + _slice('const GESTURES', '// Later gestures') + """
+const tgt = {closest: s => %s};
+listeners.pointerdown[0]({target: tgt});
+const n = (listeners.touchstart||[]).length + (listeners.keydown||[]).length + (listeners.pointerdown||[]).length;
+console.log(JSON.stringify({audio: !!audioCtx, sirens, remaining: n}));
+""" % ('({})' if target_silence else 'null')
+
+@node
+@pytest.mark.parametrize('on_silence,expected', [(False, 1), (True, 0)])
+def test_any_tap_unlocks_and_plays_unless_on_silence(on_silence, expected):
+    out = subprocess.run(['node', '-e', _gesture_js(on_silence)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-600:]
+    r = json.loads(out.stdout)
+    assert r == {'audio': True, 'sirens': expected, 'remaining': 0}
+
+def test_gesture_listener_is_capture_phase():
+    assert "addEventListener(t, onFirstGesture, { capture: true" in HTML
