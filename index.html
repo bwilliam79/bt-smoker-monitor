@@ -1069,7 +1069,7 @@ function pushChartPoint(d, date = new Date(), skipUpdate = false) {
   // Poll ticks land on exact multiples of the poll interval (server.py aligns
   // to wall-clock ticks), so as long as the interval divides CHART_POINT_MIN_GAP_MS
   // evenly, one tick per bucket lands exactly on the mark — accept only that one.
-  // Keep the first reading in each 5-minute bucket (normally the :05 tick, but
+  // Keep the first reading in each 1-minute bucket (normally the :00 tick, but
   // a missed tick no longer drops the whole bucket), and always draw the newest
   // reading as a live tail point that the next reading replaces. Without the
   // tail a fresh cook showed 0-1 points for up to 10 minutes and, with
@@ -1083,8 +1083,11 @@ function pushChartPoint(d, date = new Date(), skipUpdate = false) {
   const bucket = Math.floor(ts / CHART_POINT_MIN_GAP_MS);
   chartTailIsLive = bucket <= chartLastBucket;
   if (!chartTailIsLive) chartLastBucket = bucket;
-  chartTimestamps.push(ts);
-  chartLabels.push(fmtTime(date));
+  // Kept points sit exactly on the minute mark (the first reading in that
+  // minute, normally the :00 tick); only the live tail shows its real time.
+  const plotTs = chartTailIsLive ? ts : bucket * CHART_POINT_MIN_GAP_MS;
+  chartTimestamps.push(plotTs);
+  chartLabels.push(fmtTime(new Date(plotTs)));
   DS.grill.push(d.grill);
   DS.grillTarget.push(d.setPoint);
   const p1tgt = effectiveProbeTarget(d, 0);

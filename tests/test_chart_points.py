@@ -31,9 +31,9 @@ for (const t of {json.dumps(ticks)}) {{
 console.log(JSON.stringify(out));
 """
     res = json.loads(subprocess.run(['node', '-e', js], capture_output=True, text=True, check=True).stdout)
-    assert res[0] == [base + 40]
-    assert res[1] == [base + 40, base + 50]             # 2 points -> a line
-    assert res[2] == [base + 40, base + 70]             # missed :00 tick, first in bucket kept
-    assert res[3] == [base + 40, base + 70, base + 80]
-    assert res[4] == [base + 40, base + 70, base + 120]
-    assert res[5] == [base + 40, base + 70, base + 120, base + 125]
+    assert res[0] == [base]                             # snapped to the minute
+    assert res[1] == [base, base + 50]                  # 2 points -> a line (live tail)
+    assert res[2] == [base, base + 60]                  # missed :00 tick, still plotted on the minute
+    assert res[3] == [base, base + 60, base + 80]
+    assert res[4] == [base, base + 60, base + 120]
+    assert res[5] == [base, base + 60, base + 120, base + 125]
