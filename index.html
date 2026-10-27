@@ -55,7 +55,7 @@
     }
     button, input, select { font-family: inherit; }
     button { color: inherit; }
-    .silence-btn { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 50; display: none; padding: 12px 22px; border-radius: 999px; border: 1px solid rgba(255, 90, 82, 0.6); background: #2a1514; color: var(--alert); font: inherit; font-weight: 600; font-size: 16px; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,0.5); }
+    .silence-btn { display: none; width: 100%; margin-top: 10px; padding: 10px 16px; border-radius: 999px; border: 1px solid rgba(255, 90, 82, 0.6); background: #2a1514; color: var(--alert); font: inherit; font-weight: 600; font-size: 15px; cursor: pointer; }
     .silence-btn.show { display: block; }
     :focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ember); }
 
@@ -541,7 +541,7 @@
           </div>
         </div>
         <div class="tile-status" id="grillStatus"><span id="grillAtTempTimer"></span></div>
-        <button type="button" class="silence-btn" id="silenceBtn" onclick="silenceAlarms()">Silence alarm</button>
+        <button type="button" class="silence-btn" id="silenceBtnGrill" onclick="silenceAlarms('grill')">Silence alarm</button>
       </article>
       <article class="temp-card probe" id="cardP1">
         <div class="tile-top">
@@ -560,6 +560,7 @@
           </label>
         </div>
         <div class="tile-status" id="etaP1"></div>
+        <button type="button" class="silence-btn" id="silenceBtnP1" onclick="silenceAlarms(0)">Silence alarm</button>
       </article>
       <article class="temp-card probe probe2" id="cardP2">
         <div class="tile-top">
@@ -578,6 +579,7 @@
           </label>
         </div>
         <div class="tile-status" id="etaP2"></div>
+        <button type="button" class="silence-btn" id="silenceBtnP2" onclick="silenceAlarms(1)">Silence alarm</button>
       </article>
     </div>
 
@@ -1331,33 +1333,41 @@ function clearGrillUnderTempAlarm() {
   updateSilenceBtn();
 }
 
-// Silence: stops the repeating sirens for the alarms that are active now.
-// The visual alarm state stays until the reading recovers; an alarm that
-// clears and fires again later sounds again.
+// Silence: each alarming card gets its own button that stops that card's
+// repeating siren. The on-screen alarm stays until the reading recovers; an
+// alarm that clears and fires again sounds again. Browsers keep audio off
+// until the page is tapped once after loading, so while audio is still locked
+// the button reads "Tap to hear alarm" and turns the sound on instead.
+const SILENCE_BTNS = [['grill', 'silenceBtnGrill'], [0, 'silenceBtnP1'], [1, 'silenceBtnP2']];
+function sirenActive(k) {
+  return k === 'grill' ? !!(grillOverTempInterval || grillUnderTempInterval)
+                       : !!overTempInterval[k];
+}
 function anySirenActive() {
-  return !!(grillOverTempInterval || grillUnderTempInterval ||
-            overTempInterval[0] || overTempInterval[1]);
+  return SILENCE_BTNS.some(([k]) => sirenActive(k));
 }
-// Browsers keep audio off until the page is tapped once after loading. While
-// an alarm is active and audio is still locked, the button offers to turn the
-// sound on instead of silencing.
 function updateSilenceBtn() {
-  const b = document.getElementById('silenceBtn');
-  if (!b) return;
-  b.classList.toggle('show', anySirenActive());
-  b.textContent = audioCtx ? 'Silence alarm' : 'Tap to hear alarm';
+  for (const [k, id] of SILENCE_BTNS) {
+    const b = document.getElementById(id);
+    if (!b) continue;
+    b.classList.toggle('show', sirenActive(k));
+    b.textContent = audioCtx ? 'Silence alarm' : 'Tap to hear alarm';
+  }
 }
-function silenceAlarms() {
+function silenceAlarms(k) {
   if (!audioCtx) {          // first tap: unlock audio and sound the alarm now
     unlockAudio();
     playSiren();
     updateSilenceBtn();
     return;
   }
-  clearInterval(grillOverTempInterval);  grillOverTempInterval  = null;
-  clearInterval(grillUnderTempInterval); grillUnderTempInterval = null;
-  for (let i = 0; i < 2; i++) { clearInterval(overTempInterval[i]); overTempInterval[i] = null; }
-  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  if (k === 'grill') {
+    clearInterval(grillOverTempInterval);  grillOverTempInterval  = null;
+    clearInterval(grillUnderTempInterval); grillUnderTempInterval = null;
+  } else {
+    clearInterval(overTempInterval[k]); overTempInterval[k] = null;
+  }
+  if (!anySirenActive() && 'speechSynthesis' in window) speechSynthesis.cancel();
   updateSilenceBtn();
 }
 
