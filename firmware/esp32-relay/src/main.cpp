@@ -38,7 +38,7 @@ static String gattJson = "{\"ok\":false}";
 static String devicePass = "";
 static String sessionSid = "";
 static int lastRssi = 0;
-static const char *FW_VERSION = "v1.4.4";
+static const char *FW_VERSION = "v1.4.5";
 static bool haveReading = false;
 static bool scanning = false;
 static bool haveTarget = false;
@@ -55,6 +55,18 @@ static uint32_t lastPollMs = 0;
 static uint32_t lastPollOkMs = 0;
 static uint32_t bleConnectCount = 0;
 static uint8_t consecutivePollFails = 0;
+// v1.4.5 BLE resilience telemetry + cached-address retry state.
+static int lastBleError = 0;               // NimBLEClient::getLastError() after a failed connect
+static uint32_t consecConnectFails = 0;    // reset on a successful connect
+static uint32_t totalConnectFails = 0;
+static uint32_t quickRetryOk = 0;
+static uint32_t rescanCount = 0;
+static uint8_t addrFailPolls = 0;          // failed polls against the cached address
+static uint32_t quickRetryAtMs = 0;        // non-zero: one quick retry pending (non-blocking)
+static const uint8_t ADDR_FAIL_POLLS_BEFORE_RESCAN = 3;
+static const uint32_t QUICK_RETRY_DELAY_MS = 2000;
+static const uint32_t CONNECT_TIMEOUT_S = 5;  // under server.py relay HTTP timeout (8 s)
+static const uint32_t RESCAN_SECS = 4;     // active, full duty; stops early once found
 static String bootResetReason = "unknown";
 static const uint32_t POLL_EVERY_MS = 30000;
 static String staSsid = "";
@@ -420,7 +432,7 @@ static bool pollOnce() {
   }
   if (!bleClient) {
     bleClient = NimBLEDevice::createClient();
-    bleClient->setConnectTimeout(10);
+    bleClient->setConnectTimeout(CONNECT_TIMEOUT_S);
   }
   ensureBleDisconnected();
   tempChar = nullptr;
@@ -430,8 +442,13 @@ static bool pollOnce() {
 
   bool ok = false;
   if (!bleClient->connect(targetAddr, false)) {
-    setLastErr("connect failed");
-    Serial.println("connect failed");
+    lastBleError = bleClient->getLastError();
+    consecConnectFails++;
+    totalConnectFails++;
+    char eb[48];
+    snprintf(eb, sizeof(eb), "connect failed (rc=%d)", lastBleError);
+    setLastErr(eb);
+    Serial.println(eb);
     // Keep last haveReading across ONE failed poll to cut 503 flaps.
     consecutivePollFails++;
     if (consecutivePollFails > 1) {
@@ -441,6 +458,7 @@ static bool pollOnce() {
     return false;
   }
   bleConnectCount++;
+  consecConnectFails = 0;
   lastRssi = bleClient->getRssi();
 
   NimBLERemoteCharacteristic *ipCh = findChar(bleClient, CHAR_IP);
@@ -481,6 +499,16 @@ static bool pollOnce() {
 }
 
 static void onScanDone(NimBLEScanResults) { scanning = false; }
+
+// Keep the cached smoker address across failed polls; only rescan after
+// ADDR_FAIL_POLLS_BEFORE_RESCAN consecutive failed polls.
+static void afterFailedPoll() {
+  addrFailPolls++;
+  if (addrFailPolls >= ADDR_FAIL_POLLS_BEFORE_RESCAN) {
+    addrFailPolls = 0;
+    haveTarget = false;
+  }
+}
 
 // Soft-pause only. Never tear down the NimBLE stack from inside a WebServer
 // upload callback — that can wedge the sole HTTP task (TCP accept, 0-byte
@@ -595,12 +623,14 @@ static void handleHealth() {
   String reasonEsc = jsonEscape(bootResetReason);
   String ap = isSoftAp() ? WiFi.softAPIP().toString() : "";
   String sta = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
-  char buf[720];
+  char buf[900];
   int wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   snprintf(buf, sizeof(buf),
            "{\"ok\":true,\"name\":\"%s\",\"ble\":%s,\"haveReading\":%s,\"ap\":\"%s\",\"sta\":\"%s\","
            "\"wifiRssi\":%d,\"bleRssi\":%d,\"lastErr\":\"%s\",\"packetChar\":\"%s\","
-           "\"uptimeMs\":%lu,\"resetReason\":\"%s\",\"lastPollOkMs\":%lu,\"bleConnectCount\":%lu,\"fw\":\"%s\"}",
+           "\"uptimeMs\":%lu,\"resetReason\":\"%s\",\"lastPollOkMs\":%lu,\"bleConnectCount\":%lu,\"fw\":\"%s\","
+           "\"bleLastError\":%d,\"bleConsecConnectFails\":%lu,\"bleConnectFails\":%lu,"
+           "\"bleQuickRetryOk\":%lu,\"bleRescans\":%lu}",
            nameEsc.c_str(),
            bleClient && bleClient->isConnected() ? "true" : "false",
            haveReading ? "true" : "false",
@@ -608,7 +638,9 @@ static void handleHealth() {
            sta.c_str(),
            wifiRssi, lastRssi, errEsc.c_str(), charEsc.c_str(),
            (unsigned long)millis(), reasonEsc.c_str(),
-           (unsigned long)lastPollOkMs, (unsigned long)bleConnectCount, FW_VERSION);
+           (unsigned long)lastPollOkMs, (unsigned long)bleConnectCount, FW_VERSION,
+           lastBleError, (unsigned long)consecConnectFails, (unsigned long)totalConnectFails,
+           (unsigned long)quickRetryOk, (unsigned long)rescanCount);
   server.send(200, "application/json", buf);
 }
 
@@ -951,9 +983,10 @@ void setup() {
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   NimBLEScan *scan = NimBLEDevice::getScan();
   scan->setAdvertisedDeviceCallbacks(&scanCbs, false);
-  scan->setActiveScan(false);
-  scan->setInterval(160);
-  scan->setWindow(40);
+  // Active scan at full duty (interval == window): find the smoker fast.
+  scan->setActiveScan(true);
+  scan->setInterval(100);
+  scan->setWindow(100);
   bleInited = true;
   bleReadyMs = millis() + 2000;
   Serial.println("ble ready");
@@ -976,7 +1009,8 @@ void loop() {
   if (!haveTarget) {
     if (!scanning) {
       scanning = true;
-      NimBLEDevice::getScan()->start(8, onScanDone, false);
+      rescanCount++;
+      NimBLEDevice::getScan()->start(RESCAN_SECS, onScanDone, false);
     }
     return;
   }
@@ -985,11 +1019,33 @@ void loop() {
     scanning = false;
     return;
   }
+  // One quick retry ~2 s after a failed connect, scheduled from loop() so
+  // the HTTP server keeps answering in between (no long blocking poll).
+  if (quickRetryAtMs != 0) {
+    if ((int32_t)(millis() - quickRetryAtMs) < 0) {
+      return;
+    }
+    quickRetryAtMs = 0;
+    bool wasConnFail = consecConnectFails > 0;
+    if (pollOnce()) {
+      addrFailPolls = 0;
+      if (wasConnFail) quickRetryOk++;
+    } else {
+      afterFailedPoll();
+    }
+    return;
+  }
   if (lastPollMs != 0 && millis() - lastPollMs < POLL_EVERY_MS) {
     return;
   }
   lastPollMs = millis();
-  if (!pollOnce()) {
-    haveTarget = false;
+  if (pollOnce()) {
+    addrFailPolls = 0;
+  } else if (consecConnectFails > 0) {
+    // Undo the hold bump; the quick retry decides this poll's outcome.
+    if (consecutivePollFails > 0) consecutivePollFails--;
+    quickRetryAtMs = millis() + QUICK_RETRY_DELAY_MS;
+  } else {
+    afterFailedPoll();
   }
 }

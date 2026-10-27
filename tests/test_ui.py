@@ -172,7 +172,7 @@ class Firmware(unittest.TestCase):
         self.assertIn('sessionOk', save)
         self.assertIn('BT to smoker', FIRMWARE)
         self.assertIn('FW_VERSION', FIRMWARE)
-        self.assertIn('v1.4.4', FIRMWARE)
+        self.assertIn('v1.4.5', FIRMWARE)
         self.assertIn('haveReading = false', FIRMWARE)
         self.assertIn('Keep last haveReading across ONE failed poll', FIRMWARE)
         self.assertNotIn('Resume BLE', FIRMWARE)

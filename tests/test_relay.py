@@ -394,6 +394,17 @@ class RelayTelemetryTests(unittest.TestCase):
         self.assertEqual(tel['bleRssi'], -70)
         self.assertEqual(tel['lastErr'], 'ascii skip (not NXE temps)')
 
+    def test_health_v145_ble_counters_are_tolerated(self):
+        payload = {
+            'ok': True, 'name': 'smoker-relay', 'haveReading': True, 'ap': '', 'sta': '203.0.113.118',
+            'wifiRssi': -60, 'bleRssi': -72, 'lastErr': 'connect failed (rc=13)', 'fw': 'v1.4.5',
+            'bleLastError': 13, 'bleConsecConnectFails': 1, 'bleConnectFails': 4,
+            'bleQuickRetryOk': 3, 'bleRescans': 1,
+        }
+        tel = H['parse_relay_telemetry'](payload)
+        self.assertEqual(tel['bleRssi'], -72)
+        self.assertEqual(tel['lastErr'], 'connect failed (rc=13)')
+
     def test_health_rejects_junk_rssi_and_ok_false(self):
         self.assertIsNone(H['parse_relay_telemetry']({'ok': False, 'wifiRssi': -50}))
         self.assertIsNone(H['parse_relay_telemetry']({'ok': True, 'foo': 1}))

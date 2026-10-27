@@ -10,8 +10,8 @@ The live dashboard default stays **This server** (the the server radio). Enable 
 |------|--------|
 | `GET /api/reading` | Latest temps as JSON (`setPoint`, `grill`, `probeTargets`, `probes`, `rssi`, `wifiRssi`, `char`). `200` when a 20-byte NXE packet is cached, `503` while scanning. Unauthenticated (monitor poll). |
 | `GET /api/gatt` | Cached service/characteristic dump (`r/w/n/i`, last-read hex). No Bluetooth addresses. Unauthenticated LAN diagnostic. |
-| `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`, `packetChar`, `uptimeMs`, `resetReason`, `lastPollOkMs`, `bleConnectCount`, `fw`. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
-| `GET /` | Charcoal LAN page. Telemetry strip is Connected (fresh NXE packet; cleared when poll fails), Wi-Fi dBm, and BT to smoker dBm only (no IPs, no pit/set/probes). Footer shows `FW_VERSION` (e.g. fw v1.4.4). Three states: set password, unlock, logged-in config. Session cookie after set/unlock. |
+| `GET /health` | Board status: `name`, STA IP, `wifiRssi`, `bleRssi`, `lastErr`, `packetChar`, `uptimeMs`, `resetReason`, `lastPollOkMs`, `bleConnectCount`, `fw`, and (v1.4.5+) `bleLastError` (NimBLE return code from the last failed connect), `bleConsecConnectFails`, `bleConnectFails` (total), `bleQuickRetryOk`, `bleRescans`. `lastErr` reads `connect failed (rc=N)` on a connect miss. No Bluetooth addresses. Unauthenticated (LAN picker poll). |
+| `GET /` | Charcoal LAN page. Telemetry strip is Connected (fresh NXE packet; cleared when poll fails), Wi-Fi dBm, and BT to smoker dBm only (no IPs, no pit/set/probes). Footer shows `FW_VERSION` (e.g. fw v1.4.5). Three states: set password, unlock, logged-in config. Session cookie after set/unlock. |
 | `POST /wifi` | SoftAP only. Saves name, house Wi-Fi, optional device password to NVS. `404` on STA. |
 | `POST /setpass` | First-time password (new+again, 8+). Sets session cookie. |
 | `POST /unlock` | Existing password, one field. Sets session cookie. |
@@ -61,3 +61,13 @@ Crash-fix (2026-08-27): do not call `scan->stop()` from the NimBLE advertise cal
 Same decoder as `server.py` `decode_packet`: reject `len < 20`; little-endian u16 setpoint @ 4, grill @ 6, probe targets @ 8/10, probes @ 16/18.
 
 v1.4.3 join matches the the server BlueZ path: **connect, READ `bb01` + `cc01`, disconnect**. No CCCD subscribe, no persistent session, no setpoint writes. Poll every ~20s on boot and after OTA (soft-pause only during the upload). No Hold/Resume UI. A failed poll clears `haveReading` so `/api/reading` returns **503** (cook UI Connected goes off when the grill is gone). The relay never re-applies set unless we add an explicit opt-in later. GATT dump stays on `GET /api/gatt`, not the poll path. `/api/reading.char` and `/health.packetChar` name the UUID that produced the last valid packet. USB `pio run -t upload` only (do not erase NVS).
+
+### v1.4.5 BLE resilience
+
+Still connect, read, disconnect every 30 s (never stays connected). Changes to how a miss is handled:
+
+- A failed connect keeps the cached smoker address. One quick retry runs about 2 s later, scheduled from `loop()` so HTTP keeps answering in between.
+- Connect timeout is 5 s (was 10 s), under the server's 8 s relay HTTP timeout.
+- Only after 3 failed polls in a row does the relay drop the address and rescan.
+- Rescans are active at full duty (interval = window) for up to 4 s, and stop as soon as the smoker is seen (was an 8 s passive scan at 25% duty).
+- The one-miss hold on `/api/reading` is unchanged: a single failed poll keeps the last reading; two in a row return 503.
