@@ -86,13 +86,13 @@ Click the settings button in the header to open the settings modal.
 
 | Setting | Description |
 |---------|-------------|
-| **CONNECTION** | **This server** (default) talks to the smoker from the the server radio. **ESP-32 relay** hides the adapter dropdown; the smoker talks to the ESP-32 instead. Save commits the whole modal. The switch takes effect on the next poll. |
+| **CONNECTION** | **This server** (default) talks to the smoker from the server's own Bluetooth radio. **ESP-32 relay** hides the adapter dropdown; the smoker talks to the ESP-32 instead. Save commits the whole modal. The switch takes effect on the next poll. |
 | **Bluetooth Adapter** | Shown for This server. Select which adapter to use. Lists available adapters with their id and friendly name. Change takes effect on the next scan. |
 | **Relay** | Shown for ESP-32 relay. Scans the LAN for boards that answer `GET /health` and lists **name — IP** (name from the SoftAP Wi-Fi form). Pick one — happy path is pick, not type. If discovery finds nothing, a secondary **Or type IP** field appears. Public / WAN hosts are rejected. Live boards without a name field still appear as `smoker-relay` + IP. |
 | **ntfy.sh Topic** | Push notification topic. Leave blank to disable. |
 | **Public login** | Settings → **PUBLIC LOGIN** section with real labels above fields (**Username**, **New password**). Hint: “Leave blank to keep the current password.” Credentials for `https://smoker.example.com`. Editable on kitchen LAN only (`http://203.0.113.23:8888`). Eight or more characters. Hashed in `/data/config.json`. Never returned by the API. |
 
-Settings are saved to `/data/config.json` and persist across container restarts. Missing `connection` means This server, so a live cook keeps using the the server radio.
+Settings are saved to `/data/config.json` and persist across container restarts. Missing `connection` means This server, so a live cook keeps using the server's own Bluetooth radio.
 
 
 ### Public HTTPS (`smoker.example.com`)

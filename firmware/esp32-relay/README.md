@@ -2,7 +2,7 @@
 
 Small Arduino/PlatformIO sketch that sits near the smoker, talks to it over Bluetooth, and serves the same temperature packet the dashboard already understands on a LAN HTTP endpoint.
 
-The live dashboard default stays **This server** (the the server radio). Enable **ESP-32 relay** in Settings only when you want the board to be the radio.
+The live dashboard default stays **This server** (the server's own Bluetooth radio). Enable **ESP-32 relay** in Settings only when you want the board to be the radio.
 
 ## What it serves (LAN only)
 
@@ -40,7 +40,7 @@ SoftAP PSK lives in `secrets.h` (gitignored). Copy `secrets.example.h` to `secre
 
 ## Build (do not flash during a live cook)
 
-The smoker allows one Bluetooth connection. Flashing or running this board against a cook that is already on the the server radio will steal that connection.
+The smoker allows one Bluetooth connection. Flashing or running this board against a cook that is already on the server's own Bluetooth radio will steal that connection.
 
 ```bash
 pio run
@@ -60,7 +60,7 @@ Crash-fix (2026-08-27): do not call `scan->stop()` from the NimBLE advertise cal
 
 Same decoder as `server.py` `decode_packet`: reject `len < 20`; little-endian u16 setpoint @ 4, grill @ 6, probe targets @ 8/10, probes @ 16/18.
 
-v1.4.3 join matches the the server BlueZ path: **connect, READ `bb01` + `cc01`, disconnect**. No CCCD subscribe, no persistent session, no setpoint writes. Poll every ~20s on boot and after OTA (soft-pause only during the upload). No Hold/Resume UI. A failed poll clears `haveReading` so `/api/reading` returns **503** (cook UI Connected goes off when the grill is gone). The relay never re-applies set unless we add an explicit opt-in later. GATT dump stays on `GET /api/gatt`, not the poll path. `/api/reading.char` and `/health.packetChar` name the UUID that produced the last valid packet. USB `pio run -t upload` only (do not erase NVS).
+v1.4.3 join matches the server's BlueZ path: **connect, READ `bb01` + `cc01`, disconnect**. No CCCD subscribe, no persistent session, no setpoint writes. Poll every ~20s on boot and after OTA (soft-pause only during the upload). No Hold/Resume UI. A failed poll clears `haveReading` so `/api/reading` returns **503** (cook UI Connected goes off when the grill is gone). The relay never re-applies set unless we add an explicit opt-in later. GATT dump stays on `GET /api/gatt`, not the poll path. `/api/reading.char` and `/health.packetChar` name the UUID that produced the last valid packet. USB `pio run -t upload` only (do not erase NVS).
 
 ### v1.4.5 BLE resilience
 
